@@ -1,0 +1,152 @@
+{% load static core_extras %}
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#ffffff">
+  <title>{% block title %}협회 업무관리{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'core/app.css' %}">
+</head>
+<body class="app-body">
+{% if request.user.is_authenticated %}
+<div class="app-layout">
+  <aside class="app-rail" aria-label="빠른 메뉴">
+    <a class="rail-logo" href="{% url 'core:dashboard' %}" aria-label="홈">협</a>
+    <div class="rail-icons">
+      <a class="rail-icon {% if request.resolver_match.url_name == 'dashboard' or request.resolver_match.url_name == 'job_detail' %}active{% endif %}" href="{% url 'core:dashboard' %}" aria-label="월 작업" title="월 작업">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4h13A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 18.5zM8 2v4M16 2v4M4 9h16"/></svg>
+      </a>
+      <a class="rail-icon {% if 'member' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'core:member_list' %}" aria-label="회원" title="회원">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      </a>
+      <a class="rail-icon {% if request.resolver_match.url_name == 'bank_transaction_list' or request.resolver_match.url_name == 'card_transaction_list' or request.resolver_match.url_name == 'payment_allocate' %}active{% endif %}" href="{% url 'core:bank_transaction_list' %}" aria-label="입금대조" title="입금대조">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10h18M5 6h14l2 4H3zM5 10v8M9 10v8M15 10v8M19 10v8M3 18h18M2 22h20"/></svg>
+      </a>
+      <a class="rail-icon {% if request.resolver_match.url_name == 'message_list' or request.resolver_match.url_name == 'arrears_compose' or request.resolver_match.url_name == 'message_batch_detail' %}active{% endif %}" href="{% url 'core:message_list' %}" aria-label="문자" title="문자">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4zM8 9h8M8 13h5"/></svg>
+      </a>
+    </div>
+    <button class="rail-icon rail-menu-button" id="sidebarToggle" type="button" aria-label="메뉴 열기">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+  </aside>
+
+  <aside class="app-sidebar" id="appSidebar">
+    <div class="workspace-switcher">
+      <div class="workspace-mark">강</div>
+      <div class="workspace-copy">
+        <strong>강원 화물협회</strong>
+        <span>업무관리 시스템</span>
+      </div>
+      <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+    </div>
+
+    <nav class="side-nav" aria-label="주 메뉴">
+      <div class="nav-section">
+        <span class="nav-label">업무</span>
+        <a class="nav-item {% if request.resolver_match.url_name == 'dashboard' or request.resolver_match.url_name == 'job_detail' %}active{% endif %}" href="{% url 'core:dashboard' %}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"/></svg><span>월 작업</span>
+        </a>
+        <a class="nav-item {% if 'member' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'core:member_list' %}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M22 21v-2a4 4 0 0 0-3-3.87"/></svg><span>회원관리</span>
+        </a>
+      </div>
+
+      <div class="nav-section">
+        <span class="nav-label">수납·정산</span>
+        <a class="nav-item {% if request.resolver_match.url_name == 'bank_transaction_list' or request.resolver_match.url_name == 'payment_allocate' %}active{% endif %}" href="{% url 'core:bank_transaction_list' %}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10h18M5 6h14l2 4H3zM5 10v8M9 10v8M15 10v8M19 10v8M3 18h18"/></svg><span>입금대조</span>
+        </a>
+        <a class="nav-item {% if request.resolver_match.url_name == 'card_transaction_list' %}active{% endif %}" href="{% url 'core:card_transaction_list' %}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v14H3zM3 9h18M7 15h3"/></svg><span>카드결제</span>
+        </a>
+        <a class="nav-item {% if request.resolver_match.url_name == 'charge_list' %}active{% endif %}" href="{% url 'core:charge_list' %}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 2h12v20l-3-2-3 2-3-2-3 2zM9 7h6M9 11h6M9 15h4"/></svg><span>부과·미수</span>
+        </a>
+        <a class="nav-item {% if request.resolver_match.url_name == 'refund_list' or request.resolver_match.url_name == 'refund_message_compose' %}active{% endif %}" href="{% url 'core:refund_list' %}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10a9 9 0 1 0 3-6.7L3 6M3 2v4h4M8 12h8M12 8v8"/></svg><span>환불관리</span>
+        </a>
+      </div>
+
+      <div class="nav-section">
+        <span class="nav-label">연락·관리</span>
+        <a class="nav-item {% if request.resolver_match.url_name == 'message_list' or request.resolver_match.url_name == 'arrears_compose' or request.resolver_match.url_name == 'message_batch_detail' %}active{% endif %}" href="{% url 'core:message_list' %}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4zM8 9h8M8 13h5"/></svg><span>문자발송</span>
+        </a>
+        <a class="nav-item {% if request.resolver_match.url_name == 'legal_notice_list' or request.resolver_match.url_name == 'legal_notice_edit' %}active{% endif %}" href="{% url 'core:legal_notice_list' %}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M8 13h8M8 17h6"/></svg><span>내용증명</span>
+        </a>
+        <a class="nav-item {% if request.resolver_match.url_name == 'audit_list' %}active{% endif %}" href="{% url 'core:audit_list' %}">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v4l3 2M21 12a9 9 0 1 1-3-6.7M21 3v6h-6"/></svg><span>변경이력</span>
+        </a>
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="user-avatar">A</div>
+      <div class="user-copy"><strong>{{ request.user.username }}</strong><span>공용 관리자</span></div>
+      <form action="{% url 'logout' %}" method="post" class="logout-form">{% csrf_token %}
+        <button class="icon-button" type="submit" title="로그아웃" aria-label="로그아웃">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/></svg>
+        </button>
+      </form>
+    </div>
+  </aside>
+
+  <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+  <section class="app-main">
+    <header class="utility-bar">
+      <div class="utility-left">
+        <button class="mobile-menu" id="mobileMenu" type="button" aria-label="메뉴 열기">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <span class="breadcrumb-home">강원 화물협회</span>
+        <svg class="breadcrumb-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+        <span class="breadcrumb-current">{% block breadcrumb %}{% if request.resolver_match.url_name == 'dashboard' or request.resolver_match.url_name == 'job_detail' %}월 작업{% elif 'member' in request.resolver_match.url_name %}회원관리{% elif request.resolver_match.url_name == 'bank_transaction_list' or request.resolver_match.url_name == 'payment_allocate' %}입금대조{% elif request.resolver_match.url_name == 'card_transaction_list' %}카드결제{% elif request.resolver_match.url_name == 'charge_list' %}부과·미수{% elif request.resolver_match.url_name == 'refund_list' or request.resolver_match.url_name == 'refund_message_compose' %}환불관리{% elif request.resolver_match.url_name == 'message_list' or request.resolver_match.url_name == 'arrears_compose' or request.resolver_match.url_name == 'message_batch_detail' %}문자발송{% elif request.resolver_match.url_name == 'legal_notice_list' or request.resolver_match.url_name == 'legal_notice_edit' %}내용증명{% elif request.resolver_match.url_name == 'audit_list' %}변경이력{% else %}업무관리{% endif %}{% endblock %}</span>
+      </div>
+      <div class="utility-actions">
+        <span class="sync-status"><i></i> 시스템 정상</span>
+        <a class="icon-button" href="{% url 'core:audit_list' %}" title="변경이력" aria-label="변경이력">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 7-3 9h18c0-2-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+        </a>
+      </div>
+    </header>
+
+    <main class="content-area">
+      {% if messages %}
+        <div class="messages">
+          {% for message in messages %}<div class="alert {{ message.tags|default:'info' }}">{{ message }}</div>{% endfor %}
+        </div>
+      {% endif %}
+      {% block content %}{% endblock %}
+    </main>
+  </section>
+</div>
+{% else %}
+<main>{% block public_content %}{% endblock %}</main>
+{% endif %}
+<script>
+  document.querySelectorAll('[data-confirm]').forEach(function (node) {
+    node.addEventListener('click', function (event) {
+      if (!window.confirm(node.dataset.confirm)) event.preventDefault();
+    });
+  });
+  (function () {
+    const sidebar = document.getElementById('appSidebar');
+    const backdrop = document.getElementById('sidebarBackdrop');
+    const openers = [document.getElementById('mobileMenu'), document.getElementById('sidebarToggle')].filter(Boolean);
+    function setOpen(open) {
+      if (!sidebar || !backdrop) return;
+      sidebar.classList.toggle('open', open);
+      backdrop.classList.toggle('open', open);
+      document.body.classList.toggle('nav-open', open);
+    }
+    openers.forEach(function (button) { button.addEventListener('click', function () { setOpen(!sidebar.classList.contains('open')); }); });
+    if (backdrop) backdrop.addEventListener('click', function () { setOpen(false); });
+  }());
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

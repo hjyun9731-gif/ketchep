@@ -1,0 +1,75 @@
+{% extends 'core/base.html' %}{% load core_extras %}
+{% block title %}월 작업{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>업무 대시보드</h1>
+    <p class="muted">파일 업로드부터 입금대조, 부과, 문자, 엑셀 출력까지 한 화면에서 관리합니다.</p>
+  </div>
+  <div class="actions">
+    <a class="button" href="{% url 'core:export_all' %}">전체 누적 엑셀</a>
+    <a class="button primary" href="{% url 'core:job_create' %}">새 작업 버전</a>
+  </div>
+</div>
+
+<div class="dashboard-tabs" aria-label="대시보드 구분">
+  <span class="dashboard-tab active">업무 현황</span>
+  <a class="dashboard-tab" href="{% url 'core:bank_transaction_list' %}">입금대조</a>
+  <a class="dashboard-tab" href="{% url 'core:charge_list' %}">미수금</a>
+  <a class="dashboard-tab" href="{% url 'core:message_list' %}">발송관리</a>
+</div>
+
+<div class="stats">
+  <div class="stat"><span>전체 회원</span><strong>{{ summary.members|money }}명</strong><small>등록 회원 기준</small></div>
+  <div class="stat"><span>전체 미수금</span><strong>{{ summary.outstanding|money }}원</strong><small>현재 미납 잔액</small></div>
+  <div class="stat"><span>선납금</span><strong>{{ summary.prepayment|money }}원</strong><small>향후 부과 충당</small></div>
+  <div class="stat"><span>환불대기</span><strong>{{ summary.refund_pending }}건</strong><small>폐업 선납금 환불</small></div>
+  <div class="stat"><span>입금 확인필요</span><strong>{{ summary.review_transactions }}건</strong><small>수동 검토 대상</small></div>
+</div>
+
+<div class="dashboard-grid">
+  <section class="card">
+    <div class="card-head">
+      <div><h2>월 작업 목록</h2><span class="card-subtitle">버전별 파일과 처리결과를 보존합니다.</span></div>
+      <a class="button small" href="{% url 'core:job_create' %}">+ 새 버전</a>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>작업월</th><th>버전</th><th>상태</th><th>기준본</th><th>수정일</th><th></th></tr></thead>
+        <tbody>
+        {% for job in jobs %}
+          <tr>
+            <td><strong>{{ job.year }}년 {{ job.month }}월</strong></td>
+            <td>{{ job.version_name }}</td>
+            <td><span class="badge {{ job.status|status_class }}">{{ job.get_status_display }}</span>{% if job.is_current %} <span class="badge success">현재기준</span>{% endif %}</td>
+            <td>{% if job.based_on %}{{ job.based_on.version_name }}{% else %}-{% endif %}</td>
+            <td>{{ job.updated_at|date:'Y-m-d H:i' }}</td>
+            <td class="right"><a class="button small" href="{% url 'core:job_detail' job.pk %}">열기</a></td>
+          </tr>
+        {% empty %}<tr><td colspan="6" class="empty">월 작업이 없습니다.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <aside>
+    <div class="card">
+      <div class="card-head"><h2>빠른 업무</h2></div>
+      <div class="quick-panel">
+        <a class="quick-action" href="{% url 'core:bank_transaction_list' %}"><span class="quick-icon"><svg viewBox="0 0 24 24"><path d="M3 10h18M5 6h14l2 4H3zM5 10v8M9 10v8M15 10v8M19 10v8M3 18h18"/></svg></span><span><strong>입금대조</strong><span>미배정 거래 확인</span></span></a>
+        <a class="quick-action" href="{% url 'core:member_list' %}"><span class="quick-icon"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8"/></svg></span><span><strong>회원관리</strong><span>회원·차량 조회</span></span></a>
+        <a class="quick-action" href="{% url 'core:arrears_compose' %}"><span class="quick-icon"><svg viewBox="0 0 24 24"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/></svg></span><span><strong>미수금 문자</strong><span>즉시·예약 발송</span></span></a>
+        <a class="quick-action" href="{% url 'core:refund_list' %}"><span class="quick-icon"><svg viewBox="0 0 24 24"><path d="M3 10a9 9 0 1 0 3-6.7L3 6M3 2v4h4"/></svg></span><span><strong>환불관리</strong><span>선납금 환불 처리</span></span></a>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>처리 원칙</h2></div>
+      <ul class="plain-list">
+        <li><strong>입금</strong><br><span class="muted">가장 오래된 미수금부터 자동 차감</span></li>
+        <li><strong>초과금</strong><br><span class="muted">다음 달 부과금에 선납 충당</span></li>
+        <li><strong>폐업</strong><br><span class="muted">폐업월 부과 제외, 기존 미수금 유지</span></li>
+      </ul>
+    </div>
+  </aside>
+</div>
+{% endblock %}

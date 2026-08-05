@@ -1,0 +1,770 @@
+from __future__ import annotations
+
+from decimal import Decimal
+
+from django.contrib import messages
+from django.contrib.auth.decorators import login_required
+from django.db import transaction
+from django.db.models import Q, Sum
+from django.http import FileResponse, Http404
+from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
+from django.utils import timezone
+
+from core.forms import (
+    AllocationFormSet, ArrearsComposeForm, CloseMemberForm, ColumnMappingForm,
+    JoinAssociationForm, LeaveAssociationForm, LegalNoticeForm, MemberForm,
+    MessageScheduleEditForm, MonthlyJobForm, RefundForm, RefundMessageForm, RefundPendingForm,
+    ReopenMemberForm, TransferMemberForm, UploadForm,
+)
+from core.models import (
+    AccountType, AuditLog, BankTransaction, CardTransaction, Charge, ImportIssue, LegalNotice, Member,
+    MessageBatch, MessageRecipient, MessageTemplate, MonthlyJob, Payment,
+    PaymentAllocationLine, Prepayment, Refund, UploadedFile,
+)
+from core.services.audit import log_action
+from core.services.billing import (
+    close_member, generate_charges_for_job, join_association, leave_association,
+    reopen_member,
+)
+from core.services.exports import build_workbook
+from core.services.imports import parse_uploaded_file, process_uploaded_file
+from core.services.jobs import create_job_version, clone_latest_uploaded_files, set_current_job
+from core.services.ledger import complete_refund, replace_payment_allocations
+from core.services.matching import (
+    auto_match_bank_job, auto_match_card_job, copy_allocations_from_previous_version,
+)
+from core.services.transfers import transfer_member
+from core.services.messaging import (
+    create_arrears_batch, create_refund_batch, retry_failed_batch, send_batch,
+)
+from core.utils import json_safe_model, sha256_file
+
+
+def _actor(request):
+    return request.user.username if request.user.is_authenticated else 'admin'
+
+
+@login_required
+def dashboard(request):
+    jobs = MonthlyJob.objects.all()
+    summary = {
+        'members': Member.objects.filter(is_active_record=True).count(),
+        'outstanding': sum((m.total_outstanding for m in Member.objects.filter(is_active_record=True)), Decimal('0')),
+        'prepayment': Prepayment.objects.aggregate(v=Sum('balance'))['v'] or Decimal('0'),
+        'refund_pending': Refund.objects.filter(status=Refund.Status.PENDING).count(),
+        'review_transactions': BankTransaction.objects.filter(
+            job__is_current=True,
+            status__in=[BankTransaction.Status.UNMATCHED, BankTransaction.Status.REVIEW, BankTransaction.Status.DUPLICATE],
+        ).count(),
+    }
+    return render(request, 'core/dashboard.html', {'jobs': jobs, 'summary': summary})
+
+
+@login_required
+def job_create(request):
+    if request.method == 'POST':
+        form = MonthlyJobForm(request.POST)
+        if form.is_valid():
+            year = form.cleaned_data['year']
+            month = form.cleaned_data['month']
+            based_on = MonthlyJob.objects.filter(year=year, month=month).order_by('-version').first()
+            job = create_job_version(
+                year=year, month=month,
+                version_name=form.cleaned_data['version_name'],
+                based_on=based_on,
+                actor=_actor(request),
+            )
+            job.memo = form.cleaned_data.get('memo', '')
+            job.save(update_fields=['memo', 'updated_at'])
+            messages.success(request, '새 작업 버전을 만들었습니다.')
+            return redirect('core:job_detail', pk=job.pk)
+    else:
+        now = timezone.localdate()
+        form = MonthlyJobForm(initial={'year': now.year, 'month': now.month, 'version_name': '1차 작업'})
+    return render(request, 'core/form.html', {'form': form, 'title': '월 작업 만들기'})
+
+
+@login_required
+def job_detail(request, pk):
+    job = get_object_or_404(MonthlyJob, pk=pk)
+    latest_files = {}
+    for file in job.uploaded_files.order_by('slot_type', '-created_at'):
+        latest_files.setdefault(file.slot_type, file)
+    bank_counts = {
+        'total': job.bank_transactions.count(),
+        'matched': job.bank_transactions.filter(status__in=[BankTransaction.Status.AUTO_MATCHED, BankTransaction.Status.MANUAL_MATCHED]).count(),
+        'review': job.bank_transactions.filter(status__in=[BankTransaction.Status.REVIEW, BankTransaction.Status.DUPLICATE, BankTransaction.Status.UNMATCHED]).count(),
+    }
+    charge_counts = {
+        'posted': job.charges.filter(status=Charge.Status.POSTED).count(),
+        'cancelled': job.charges.filter(status=Charge.Status.CANCELLED).count(),
+    }
+    import_issues = ImportIssue.objects.filter(
+        uploaded_file__job=job, status=ImportIssue.Status.OPEN,
+    ).select_related('uploaded_file').order_by('uploaded_file__slot_type', 'source_row')[:100]
+    return render(request, 'core/job_detail.html', {
+        'job': job,
+        'latest_files': latest_files,
+        'slot_choices': UploadedFile.SlotType.choices,
+        'bank_counts': bank_counts,
+        'charge_counts': charge_counts,
+        'import_issues': import_issues,
+    })
+
+
+@login_required
+@transaction.atomic
+def job_upload(request, pk):
+    job = get_object_or_404(MonthlyJob, pk=pk)
+    if request.method == 'POST':
+        form = UploadForm(request.POST, request.FILES)
+        if form.is_valid():
+            file_obj = form.cleaned_data['file']
+            slot_type = form.cleaned_data['slot_type']
+            target_job = job
+            if job.uploaded_files.filter(slot_type=slot_type).exists():
+                next_version = (MonthlyJob.objects.filter(year=job.year, month=job.month).order_by('-version').first().version + 1)
+                target_job = create_job_version(
+                    year=job.year,
+                    month=job.month,
+                    version_name=f'{next_version}차 작업',
+                    based_on=job,
+                    actor=_actor(request),
+                )
+                clone_latest_uploaded_files(job, target_job, exclude_slot=slot_type)
+                messages.info(request, f'같은 유형 파일이 있어 {target_job.version_name} 새 버전을 만들었습니다.')
+            digest = sha256_file(file_obj)
+            uploaded = UploadedFile.objects.create(
+                job=target_job,
+                slot_type=slot_type,
+                file=file_obj,
+                original_name=file_obj.name,
+                sha256=digest,
+                size=file_obj.size,
+            )
+            try:
+                parse_uploaded_file(uploaded)
+                if uploaded.parse_status == UploadedFile.ParseStatus.NEEDS_MAPPING:
+                    messages.warning(request, '파일은 읽었지만 열 매핑이 필요합니다.')
+                    return redirect('core:file_mapping', pk=uploaded.pk)
+                messages.success(request, '파일을 업로드하고 파싱했습니다.')
+            except Exception as exc:
+                messages.error(request, f'파일 파싱 실패: {exc}')
+            return redirect('core:job_detail', pk=target_job.pk)
+    else:
+        initial_slot = request.GET.get('slot')
+        form = UploadForm(initial={'slot_type': initial_slot} if initial_slot else None)
+    return render(request, 'core/form.html', {'form': form, 'title': f'{job} 파일 업로드'})
+
+
+@login_required
+def file_mapping(request, pk):
+    uploaded = get_object_or_404(UploadedFile, pk=pk)
+    if request.method == 'POST':
+        form = ColumnMappingForm(request.POST, uploaded=uploaded)
+        if form.is_valid():
+            uploaded.column_mapping = {k: v for k, v in form.cleaned_data.items() if v}
+            uploaded.parse_status = UploadedFile.ParseStatus.PARSED
+            uploaded.parse_error = ''
+            uploaded.save(update_fields=['column_mapping', 'parse_status', 'parse_error', 'updated_at'])
+            parse_uploaded_file(uploaded)
+            if uploaded.parse_status == UploadedFile.ParseStatus.PARSED:
+                messages.success(request, '열 매핑을 저장했습니다.')
+                return redirect('core:job_detail', pk=uploaded.job_id)
+    else:
+        form = ColumnMappingForm(uploaded=uploaded)
+    sample_rows = uploaded.parsed_rows.all()[:5]
+    return render(request, 'core/file_mapping.html', {'uploaded': uploaded, 'form': form, 'sample_rows': sample_rows})
+
+
+@login_required
+def file_process(request, pk):
+    uploaded = get_object_or_404(UploadedFile, pk=pk)
+    if request.method != 'POST':
+        raise Http404
+    try:
+        result = process_uploaded_file(uploaded)
+        messages.success(request, '파일을 업무원장에 반영했습니다: ' + ', '.join(f'{k}={v}' for k, v in result.items() if isinstance(v, (int, str))))
+    except Exception as exc:
+        messages.error(request, f'반영 실패: {exc}')
+    return redirect('core:job_detail', pk=uploaded.job_id)
+
+
+@login_required
+def job_analyze(request, pk):
+    job = get_object_or_404(MonthlyJob, pk=pk)
+    if request.method != 'POST':
+        raise Http404
+    errors = []
+    priority = {
+        UploadedFile.SlotType.LICENSE: 0,
+        UploadedFile.SlotType.RECEIVABLES: 1,
+        UploadedFile.SlotType.BANK_1: 2,
+        UploadedFile.SlotType.BANK_2: 3,
+        UploadedFile.SlotType.BANK_3: 4,
+        UploadedFile.SlotType.ALTOLAN: 5,
+        UploadedFile.SlotType.CIDER: 6,
+    }
+    parsed_files = list(job.uploaded_files.filter(parse_status=UploadedFile.ParseStatus.PARSED))
+    parsed_files.sort(key=lambda item: priority.get(item.slot_type, 99))
+    for uploaded in parsed_files:
+        try:
+            process_uploaded_file(uploaded)
+        except Exception as exc:
+            errors.append(f'{uploaded.original_name}: {exc}')
+    try:
+        charge_result = generate_charges_for_job(job, actor=_actor(request))
+        copy_result = copy_allocations_from_previous_version(job)
+        bank_result = auto_match_bank_job(job)
+        card_result = auto_match_card_job(job)
+        messages.success(request, f'분석 완료. 부과 {charge_result}, 이전매칭 {copy_result}, 통장 {bank_result}, 카드 {card_result}')
+    except Exception as exc:
+        errors.append(str(exc))
+    for error in errors:
+        messages.error(request, error)
+    return redirect('core:job_detail', pk=job.pk)
+
+
+@login_required
+def job_generate_charges(request, pk):
+    job = get_object_or_404(MonthlyJob, pk=pk)
+    if request.method == 'POST':
+        try:
+            result = generate_charges_for_job(job, actor=_actor(request))
+            messages.success(request, f'부과 재계산 완료: {result}')
+        except Exception as exc:
+            messages.error(request, str(exc))
+    return redirect('core:job_detail', pk=job.pk)
+
+
+@login_required
+def job_make_current(request, pk):
+    job = get_object_or_404(MonthlyJob, pk=pk)
+    if request.method == 'POST':
+        set_current_job(job, actor=_actor(request))
+        messages.success(request, '현재 기준 버전으로 지정했습니다.')
+    return redirect('core:job_detail', pk=pk)
+
+
+@login_required
+def job_finalize(request, pk):
+    job = get_object_or_404(MonthlyJob, pk=pk)
+    if request.method == 'POST':
+        unallocated = sum((tx.unallocated_amount for tx in job.bank_transactions.filter(is_effective=True)), Decimal('0'))
+        review = job.bank_transactions.filter(status__in=[BankTransaction.Status.REVIEW, BankTransaction.Status.DUPLICATE]).count()
+        if unallocated > 0 or review:
+            messages.warning(request, f'미배정 {unallocated:,.0f}원, 확인필요 {review}건이 남아 있습니다. 확정은 가능하지만 다시 확인하세요.')
+        job.status = MonthlyJob.Status.FINAL
+        job.finalized_at = timezone.now()
+        job.save(update_fields=['status', 'finalized_at', 'updated_at'])
+        log_action(action='monthly_job_finalized', instance=job, actor=_actor(request))
+        messages.success(request, '최종확정했습니다. 이후에도 수정할 수 있습니다.')
+    return redirect('core:job_detail', pk=pk)
+
+
+@login_required
+def job_export(request, pk):
+    job = get_object_or_404(MonthlyJob, pk=pk)
+    output = build_workbook(job=job)
+    filename = f'{job.year}_{job.month:02d}_{job.version_name}_latest.xlsx'
+    return FileResponse(output, as_attachment=True, filename=filename)
+
+
+@login_required
+def export_all(request):
+    output = build_workbook(job=None)
+    filename = f'전체누적현황_{timezone.localdate().isoformat()}.xlsx'
+    return FileResponse(output, as_attachment=True, filename=filename)
+
+
+@login_required
+def member_list(request):
+    q = request.GET.get('q', '').strip()
+    status = request.GET.get('status', '')
+    members_qs = Member.objects.filter(is_active_record=True)
+    if q:
+        members_qs = members_qs.filter(
+            Q(name__icontains=q) | Q(phone__icontains=q) | Q(address__icontains=q)
+            | Q(vehicles__vehicle_no__icontains=q)
+        ).distinct()
+    if status == 'closed':
+        members_qs = members_qs.filter(operational_status=Member.OperationalStatus.CLOSED)
+    elif status == 'address':
+        members_qs = members_qs.filter(address_needs_check=True)
+    elif status == 'phone':
+        members_qs = members_qs.filter(phone_needs_check=True)
+    elif status == 'sms_opt_out':
+        members_qs = members_qs.filter(sms_opt_out=True)
+    members_data = [{'member': m, 'outstanding': m.total_outstanding} for m in members_qs.order_by('name', 'id')[:1000]]
+    return render(request, 'core/member_list.html', {'members_data': members_data, 'q': q, 'status': status})
+
+
+@login_required
+def member_detail(request, pk):
+    member = get_object_or_404(Member, pk=pk)
+    charges = member.charges.filter(Q(monthly_job__isnull=True) | Q(monthly_job__is_current=True)).order_by('-charge_date')[:100]
+    payments = member.payment_allocation_lines.filter(status=PaymentAllocationLine.Status.ACTIVE).select_related('payment').order_by('-payment__payment_date')[:100]
+    return render(request, 'core/member_detail.html', {
+        'member': member,
+        'charges': charges,
+        'payments': payments,
+        'prepayments': member.prepayments.all(),
+        'refunds': member.refunds.all(),
+        'messages_history': member.message_recipients.select_related('batch').order_by('-created_at')[:50],
+        'notices': member.legal_notices.all()[:50],
+        'audits': AuditLog.objects.filter(model_name__icontains='member', object_id=str(member.id))[:50],
+        'outgoing_links': member.outgoing_links.select_related('new_member').all(),
+        'incoming_links': member.incoming_links.select_related('old_member').all(),
+    })
+
+
+@login_required
+def member_create(request):
+    form = MemberForm(request.POST or None)
+    if request.method == 'POST' and form.is_valid():
+        member = form.save()
+        log_action(action='member_created', instance=member, actor=_actor(request))
+        return redirect('core:member_detail', pk=member.pk)
+    return render(request, 'core/form.html', {'form': form, 'title': '회원 등록'})
+
+
+@login_required
+def member_edit(request, pk):
+    member = get_object_or_404(Member, pk=pk)
+    before = json_safe_model(member)
+    form = MemberForm(request.POST or None, instance=member)
+    if request.method == 'POST' and form.is_valid():
+        member = form.save()
+        log_action(action='member_updated', instance=member, before=before, actor=_actor(request))
+        messages.success(request, '회원정보를 수정했습니다.')
+        return redirect('core:member_detail', pk=member.pk)
+    return render(request, 'core/form.html', {'form': form, 'title': f'{member.name} 회원정보 수정'})
+
+
+@login_required
+def member_close(request, pk):
+    member = get_object_or_404(Member, pk=pk)
+    form = CloseMemberForm(request.POST or None, initial={'closure_date': timezone.localdate()})
+    if request.method == 'POST' and form.is_valid():
+        try:
+            refunds = close_member(member, actor=_actor(request), **{
+                'closure_date': form.cleaned_data['closure_date'],
+                'reason': form.cleaned_data['reason'],
+                'memo': form.cleaned_data['memo'],
+            })
+            if refunds and form.cleaned_data['send_refund_notice']:
+                batch = create_refund_batch(
+                    [r.id for r in refunds], message_type=MessageTemplate.TemplateType.REFUND_NOTICE,
+                    immediate=True, actor=_actor(request),
+                )
+                send_batch(batch, actor=_actor(request))
+            messages.success(request, '폐업 처리했습니다.')
+            return redirect('core:member_detail', pk=member.pk)
+        except Exception as exc:
+            messages.error(request, str(exc))
+    return render(request, 'core/form.html', {'form': form, 'title': f'{member.name} 폐업 처리'})
+
+
+@login_required
+def member_reopen(request, pk):
+    member = get_object_or_404(Member, pk=pk)
+    form = ReopenMemberForm(request.POST or None, initial={'re_registered_on': timezone.localdate()})
+    if request.method == 'POST' and form.is_valid():
+        reopen_member(member, actor=_actor(request), **form.cleaned_data)
+        messages.success(request, '재등록 처리했습니다.')
+        return redirect('core:member_detail', pk=member.pk)
+    return render(request, 'core/form.html', {'form': form, 'title': f'{member.name} 재등록'})
+
+
+@login_required
+def member_join(request, pk):
+    member = get_object_or_404(Member, pk=pk)
+    form = JoinAssociationForm(request.POST or None, initial={'join_date': timezone.localdate()})
+    if request.method == 'POST' and form.is_valid():
+        try:
+            completed = join_association(member, actor=_actor(request), **form.cleaned_data)
+            if completed:
+                messages.success(request, '협회가입 처리했습니다.')
+            else:
+                messages.warning(request, '관리비 미수금이 남아 가입대기로 처리했습니다. 전액 납부 후 다시 가입 완료하세요.')
+            return redirect('core:member_detail', pk=member.pk)
+        except Exception as exc:
+            messages.error(request, str(exc))
+    return render(request, 'core/form.html', {'form': form, 'title': f'{member.name} 협회가입'})
+
+
+@login_required
+def member_leave(request, pk):
+    member = get_object_or_404(Member, pk=pk)
+    form = LeaveAssociationForm(request.POST or None, initial={'leave_date': timezone.localdate()})
+    if request.method == 'POST' and form.is_valid():
+        try:
+            leave_association(member, actor=_actor(request), **form.cleaned_data)
+            messages.success(request, '협회탈퇴 처리했습니다.')
+            return redirect('core:member_detail', pk=member.pk)
+        except Exception as exc:
+            messages.error(request, str(exc))
+    return render(request, 'core/form.html', {'form': form, 'title': f'{member.name} 협회탈퇴'})
+
+
+@login_required
+def member_transfer(request, pk):
+    member = get_object_or_404(Member, pk=pk)
+    current_vehicle = member.current_vehicle
+    initial = {
+        'effective_date': timezone.localdate(),
+        'new_vehicle_no': current_vehicle.vehicle_no if current_vehicle else '',
+        'new_region': member.region,
+    }
+    form = TransferMemberForm(request.POST or None, initial=initial)
+    if request.method == 'POST' and form.is_valid():
+        try:
+            new_member, link = transfer_member(member, actor=_actor(request), **form.cleaned_data)
+            messages.success(
+                request,
+                '명의 이전을 처리했습니다. 기존 미수금은 승계했습니다.'
+                if link.arrears_transferred else
+                '일반 양도양수를 처리했습니다. 기존 미수금은 이전 명의자에게 유지됩니다.',
+            )
+            return redirect('core:member_detail', pk=new_member.pk)
+        except Exception as exc:
+            messages.error(request, str(exc))
+    return render(request, 'core/form.html', {'form': form, 'title': f'{member.name} 명의 이전'})
+
+
+@login_required
+def bank_transaction_list(request):
+    job_id = request.GET.get('job')
+    status = request.GET.get('status', '')
+    q = request.GET.get('q', '').strip()
+    txs = BankTransaction.objects.select_related('job', 'uploaded_file', 'payment').filter(job__is_current=True)
+    if job_id:
+        txs = txs.filter(job_id=job_id)
+    if status:
+        txs = txs.filter(status=status)
+    if q:
+        txs = txs.filter(Q(payer_text__icontains=q) | Q(bank_account_label__icontains=q))
+    return render(request, 'core/bank_list.html', {
+        'transactions': txs.order_by('-transaction_at', '-id')[:2000],
+        'jobs': MonthlyJob.objects.filter(is_current=True), 'status_choices': BankTransaction.Status.choices,
+        'job_id': job_id, 'status': status, 'q': q,
+    })
+
+
+@login_required
+def card_transaction_list(request):
+    job_id = request.GET.get('job')
+    status = request.GET.get('status', '')
+    q = request.GET.get('q', '').strip()
+    txs = CardTransaction.objects.select_related('job', 'uploaded_file', 'payment').filter(job__is_current=True)
+    if job_id:
+        txs = txs.filter(job_id=job_id)
+    if status:
+        txs = txs.filter(status=status)
+    if q:
+        txs = txs.filter(
+            Q(member_name__icontains=q) | Q(vehicle_no__icontains=q) | Q(txn_key__icontains=q)
+        )
+    return render(request, 'core/card_list.html', {
+        'transactions': txs.order_by('-transaction_at', '-id')[:2000],
+        'jobs': MonthlyJob.objects.filter(is_current=True),
+        'status_choices': CardTransaction.Status.choices,
+        'job_id': job_id, 'status': status, 'q': q,
+    })
+
+
+@login_required
+def payment_allocate(request, pk):
+    payment = get_object_or_404(Payment.objects.select_related('bank_transaction', 'card_transaction'), pk=pk)
+    existing = payment.allocation_lines.filter(status=PaymentAllocationLine.Status.ACTIVE)
+    initial = [{
+        'member': line.member_id, 'account_type': line.account_type,
+        'amount': line.amount, 'memo': line.memo,
+    } for line in existing]
+    formset = AllocationFormSet(request.POST or None, initial=initial)
+    if request.method == 'POST' and formset.is_valid():
+        rows = []
+        for form in formset:
+            if not form.cleaned_data or form.cleaned_data.get('DELETE'):
+                continue
+            rows.append({
+                'member': form.cleaned_data['member'],
+                'account_type': form.cleaned_data['account_type'],
+                'amount': form.cleaned_data['amount'],
+                'memo': form.cleaned_data.get('memo', ''),
+            })
+        try:
+            replace_payment_allocations(payment, rows, reason='화면 수동배정', actor=_actor(request))
+            messages.success(request, '입금 배정을 저장했습니다.')
+            if payment.bank_transaction_id:
+                return redirect('core:bank_transaction_list')
+            return redirect('core:dashboard')
+        except Exception as exc:
+            messages.error(request, str(exc))
+    return render(request, 'core/payment_allocate.html', {'payment': payment, 'formset': formset})
+
+
+@login_required
+def charge_list(request):
+    account = request.GET.get('account', '')
+    q = request.GET.get('q', '').strip()
+    charges = Charge.objects.filter(Q(monthly_job__isnull=True) | Q(monthly_job__is_current=True)).select_related('member', 'monthly_job')
+    if account:
+        charges = charges.filter(account_type=account)
+    if q:
+        charges = charges.filter(Q(member__name__icontains=q) | Q(member__vehicles__vehicle_no__icontains=q)).distinct()
+    return render(request, 'core/charge_list.html', {
+        'charges': charges.order_by('-charge_date', 'member__name')[:2000],
+        'account_choices': AccountType.choices, 'account': account, 'q': q,
+    })
+
+
+@login_required
+def refund_list(request):
+    status = request.GET.get('status', '')
+    refunds = Refund.objects.select_related('member')
+    if status:
+        refunds = refunds.filter(status=status)
+    return render(request, 'core/refund_list.html', {'refunds': refunds, 'status_choices': Refund.Status.choices, 'status': status})
+
+
+@login_required
+def refund_create(request, member_pk):
+    member = get_object_or_404(Member, pk=member_pk)
+    form = RefundPendingForm(request.POST or None)
+    if request.method == 'POST' and form.is_valid():
+        refund = form.save(commit=False)
+        refund.member = member
+        refund.status = Refund.Status.PENDING
+        refund.save()
+        log_action(action='refund_pending_created', instance=refund, actor=_actor(request))
+        messages.success(request, '환불대기를 등록했습니다.')
+        return redirect('core:member_detail', pk=member.pk)
+    return render(request, 'core/form.html', {'form': form, 'title': f'{member.name} 환불대기 등록'})
+
+
+@login_required
+def refund_complete(request, pk):
+    refund = get_object_or_404(Refund, pk=pk)
+    form = RefundForm(request.POST or None, instance=refund)
+    if request.method == 'POST' and form.is_valid():
+        updated = form.save(commit=False)
+        updated.status = Refund.Status.PENDING
+        updated.save()
+        try:
+            complete_refund(updated, actor=_actor(request))
+            if form.cleaned_data['send_completion_sms']:
+                batch = create_refund_batch(
+                    [updated.id], message_type=MessageTemplate.TemplateType.REFUND_COMPLETE,
+                    immediate=True, actor=_actor(request),
+                )
+                send_batch(batch, actor=_actor(request))
+            messages.success(request, '환불 완료 처리했습니다.')
+            return redirect('core:member_detail', pk=refund.member_id)
+        except Exception as exc:
+            messages.error(request, str(exc))
+    return render(request, 'core/form.html', {'form': form, 'title': f'{refund.member.name} 환불 완료'})
+
+
+@login_required
+def arrears_compose(request):
+    q = request.GET.get('q', '').strip()
+    operational = request.GET.get('operational', '')
+    contact = request.GET.get('contact', '')
+    collection = request.GET.get('collection', '')
+    members_qs = Member.objects.filter(is_active_record=True).order_by('name')
+    if q:
+        members_qs = members_qs.filter(
+            Q(name__icontains=q) | Q(phone__icontains=q) | Q(vehicles__vehicle_no__icontains=q)
+        ).distinct()
+    if operational:
+        members_qs = members_qs.filter(operational_status=operational)
+    if collection:
+        members_qs = members_qs.filter(collection_status=collection)
+    if contact == 'can_sms':
+        members_qs = members_qs.exclude(phone='').filter(phone_needs_check=False, sms_opt_out=False)
+    elif contact == 'missing_phone':
+        members_qs = members_qs.filter(Q(phone='') | Q(phone_needs_check=True))
+    elif contact == 'opt_out':
+        members_qs = members_qs.filter(sms_opt_out=True)
+    elif contact == 'address':
+        members_qs = members_qs.filter(address_needs_check=True)
+    elif contact == 'not_sent':
+        members_qs = members_qs.exclude(message_recipients__status=MessageRecipient.Status.SENT).distinct()
+    candidates = [m for m in members_qs if m.total_outstanding > 0]
+    form = ArrearsComposeForm(request.POST or None)
+    if request.method == 'POST' and form.is_valid():
+        selected = request.POST.getlist('member_ids')
+        if not selected:
+            messages.error(request, '대상자를 선택하세요.')
+        else:
+            batch = create_arrears_batch(
+                selected,
+                due_date=form.cleaned_data['due_date'],
+                scheduled_at=form.cleaned_data['scheduled_at'],
+                immediate=True,
+                actor=_actor(request),
+            )
+            return redirect('core:message_batch_detail', pk=batch.pk)
+    return render(request, 'core/arrears_compose.html', {
+        'form': form, 'candidates': candidates, 'q': q,
+        'operational': operational, 'contact': contact, 'collection': collection,
+        'operational_choices': Member.OperationalStatus.choices,
+        'collection_choices': Member.CollectionStatus.choices,
+    })
+
+
+@login_required
+def message_list(request):
+    return render(request, 'core/message_list.html', {'batches': MessageBatch.objects.all()[:500]})
+
+
+@login_required
+def message_batch_detail(request, pk):
+    batch = get_object_or_404(MessageBatch, pk=pk)
+    if request.method == 'POST':
+        action = request.POST.get('action')
+        if action == 'update_selection':
+            if batch.status not in {MessageBatch.Status.DRAFT, MessageBatch.Status.SCHEDULED}:
+                messages.error(request, '발송 완료 후에는 대상자를 변경할 수 없습니다.')
+                return redirect('core:message_batch_detail', pk=batch.pk)
+            selected = set(request.POST.getlist('recipient_ids'))
+            for recipient in batch.recipients.all():
+                if recipient.exclusion_reason and recipient.exclusion_reason != '이번 발송 제외':
+                    continue
+                if str(recipient.id) in selected:
+                    recipient.status = MessageRecipient.Status.PENDING
+                    recipient.exclusion_reason = ''
+                else:
+                    recipient.status = MessageRecipient.Status.EXCLUDED
+                    recipient.exclusion_reason = '이번 발송 제외'
+                recipient.save(update_fields=['status', 'exclusion_reason', 'updated_at'])
+            messages.success(request, '이번 발송 대상을 수정했습니다.')
+        elif action == 'confirm':
+            if batch.scheduled_at and batch.scheduled_at > timezone.now():
+                batch.status = MessageBatch.Status.SCHEDULED
+                batch.save(update_fields=['status', 'updated_at'])
+                messages.success(request, '예약 발송을 확정했습니다.')
+            else:
+                send_batch(batch, actor=_actor(request))
+                messages.success(request, '발송 처리를 완료했습니다.')
+        elif action == 'cancel':
+            batch.status = MessageBatch.Status.CANCELLED
+            batch.save(update_fields=['status', 'updated_at'])
+            messages.success(request, '예약/발송을 취소했습니다.')
+        elif action == 'retry_failed':
+            retry = retry_failed_batch(batch, actor=_actor(request))
+            return redirect('core:message_batch_detail', pk=retry.pk)
+        return redirect('core:message_batch_detail', pk=batch.pk)
+    return render(request, 'core/message_batch_detail.html', {'batch': batch, 'recipients': batch.recipients.select_related('member')})
+
+
+@login_required
+def message_batch_edit(request, pk):
+    batch = get_object_or_404(MessageBatch, pk=pk)
+    if batch.status not in {MessageBatch.Status.DRAFT, MessageBatch.Status.SCHEDULED}:
+        messages.error(request, '이미 발송된 건은 예약정보를 수정할 수 없습니다.')
+        return redirect('core:message_batch_detail', pk=batch.pk)
+    form = MessageScheduleEditForm(request.POST or None, instance=batch)
+    if request.method == 'POST' and form.is_valid():
+        batch = form.save()
+        if batch.scheduled_at and batch.scheduled_at > timezone.now():
+            batch.status = MessageBatch.Status.SCHEDULED
+        else:
+            batch.status = MessageBatch.Status.DRAFT
+        batch.save(update_fields=['status', 'updated_at'])
+        log_action(action='message_schedule_updated', instance=batch, actor=_actor(request))
+        messages.success(request, '예약정보를 수정했습니다.')
+        return redirect('core:message_batch_detail', pk=batch.pk)
+    return render(request, 'core/form.html', {'form': form, 'title': '문자 예약정보 수정'})
+
+
+@login_required
+def refund_message_compose(request):
+    refunds = Refund.objects.select_related('member').exclude(status=Refund.Status.CANCELLED).order_by('-created_at')
+    form = RefundMessageForm(request.POST or None)
+    if request.method == 'POST' and form.is_valid():
+        selected = request.POST.getlist('refund_ids')
+        if not selected:
+            messages.error(request, '환불 건을 선택하세요.')
+        else:
+            batch = create_refund_batch(
+                selected,
+                message_type=form.cleaned_data['message_type'],
+                scheduled_at=form.cleaned_data['scheduled_at'],
+                immediate=True,
+                actor=_actor(request),
+            )
+            return redirect('core:message_batch_detail', pk=batch.pk)
+    return render(request, 'core/refund_message_compose.html', {'form': form, 'refunds': refunds})
+
+
+@login_required
+def legal_notice_list(request):
+    return render(request, 'core/legal_notice_list.html', {'notices': LegalNotice.objects.select_related('member')[:1000]})
+
+
+@login_required
+def legal_notice_create(request, member_pk):
+    member = get_object_or_404(Member, pk=member_pk)
+    if member.address_needs_check:
+        messages.error(request, '주소 확인 필요 상태이므로 새 내용증명을 등록할 수 없습니다.')
+        return redirect('core:member_detail', pk=member.pk)
+    form = LegalNoticeForm(request.POST or None, initial={'sent_date': timezone.localdate()})
+    if request.method == 'POST' and form.is_valid():
+        notice = form.save(commit=False)
+        notice.member = member
+        notice.actor = _actor(request)
+        if notice.address_type == LegalNotice.AddressType.BASIC:
+            notice.address_snapshot = member.address
+        elif notice.address_type == LegalNotice.AddressType.OFFICIAL:
+            notice.address_snapshot = member.official_address
+        else:
+            notice.address_snapshot = member.address
+            notice.second_address_snapshot = '' if member.address == member.official_address else member.official_address
+        notice.save()
+        log_action(action='legal_notice_created', instance=notice, actor=_actor(request))
+        return redirect('core:member_detail', pk=member.pk)
+    return render(request, 'core/form.html', {'form': form, 'title': f'{member.name} 내용증명 등록'})
+
+
+@login_required
+def legal_notice_edit(request, pk):
+    notice = get_object_or_404(LegalNotice, pk=pk)
+    before_status = notice.delivery_status
+    form = LegalNoticeForm(request.POST or None, instance=notice)
+    if request.method == 'POST' and form.is_valid():
+        notice = form.save()
+        failed_statuses = {
+            LegalNotice.DeliveryStatus.RETURNED,
+            LegalNotice.DeliveryStatus.UNKNOWN_RECIPIENT,
+            LegalNotice.DeliveryStatus.UNKNOWN_ADDRESS,
+            LegalNotice.DeliveryStatus.ABSENT,
+        }
+        if notice.delivery_status in failed_statuses:
+            notice.member.address_needs_check = True
+            notice.member.save(update_fields=['address_needs_check', 'updated_at'])
+        log_action(action='legal_notice_updated', instance=notice, before={'delivery_status': before_status}, actor=_actor(request))
+        return redirect('core:member_detail', pk=notice.member_id)
+    return render(request, 'core/form.html', {'form': form, 'title': '내용증명 배송결과 수정'})
+
+
+@login_required
+def address_check_clear(request, pk):
+    member = get_object_or_404(Member, pk=pk)
+    if request.method == 'POST':
+        member.address_needs_check = False
+        member.save(update_fields=['address_needs_check', 'updated_at'])
+        log_action(action='address_check_cleared', instance=member, actor=_actor(request))
+        messages.success(request, '주소 확인 필요 상태를 해제했습니다.')
+    return redirect('core:member_detail', pk=pk)
+
+
+@login_required
+def audit_list(request):
+    q = request.GET.get('q', '').strip()
+    logs = AuditLog.objects.all()
+    if q:
+        logs = logs.filter(Q(action__icontains=q) | Q(model_name__icontains=q) | Q(reason__icontains=q))
+    return render(request, 'core/audit_list.html', {'logs': logs[:2000], 'q': q})

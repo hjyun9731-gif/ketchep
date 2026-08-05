@@ -1,0 +1,16 @@
+GitHub 업로드 요약
+
+1. GitHub Desktop 설치 후 로그인
+2. File > Add Local Repository
+3. 이 폴더(freight_association_github_ready_v1.1.0)를 선택
+4. create a repository 링크가 나오면 클릭
+5. Name: freight-association-system
+6. Initialize this repository with a README 체크하지 않기
+7. Create Repository
+8. Publish repository
+9. Keep this code private 체크 유지
+
+중요:
+- ZIP 파일 자체를 저장소에 올리지 말고, 압축을 푼 이 폴더를 GitHub Desktop으로 올립니다.
+- .env, 발송닷컴 아이디/비밀번호, 실제 회원 엑셀 파일은 GitHub에 올리지 않습니다.
+- 저장소 최상단에 manage.py, requirements.txt, Dockerfile, railway.json이 보여야 정상입니다.

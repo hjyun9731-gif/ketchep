@@ -1,0 +1,5 @@
+{% extends 'core/base.html' %}{% load core_extras %}
+{% block title %}입금 배정{% endblock %}{% block content %}
+<div class="page-head"><div><h1>입금 배정</h1><p class="muted">{{ payment.payment_date|date:'Y-m-d H:i' }} · {{ payment.amount|money }}원 · 미배정 {{ payment.unallocated_amount|money }}원</p></div></div>
+<div class="card form-card"><form method="post">{% csrf_token %}{{ formset.management_form }}{% for form in formset %}<div class="allocation-row">{{ form.id }}<div>{{ form.member.label_tag }}{{ form.member }}{{ form.member.errors }}</div><div>{{ form.account_type.label_tag }}{{ form.account_type }}{{ form.account_type.errors }}</div><div>{{ form.amount.label_tag }}{{ form.amount }}{{ form.amount.errors }}</div><div>{{ form.memo.label_tag }}{{ form.memo }}</div>{% if form.DELETE %}<div>{{ form.DELETE.label_tag }}{{ form.DELETE }}</div>{% endif %}</div>{% endfor %}{% if formset.non_form_errors %}<div class="alert error">{{ formset.non_form_errors }}</div>{% endif %}<div class="actions"><button class="button primary">배정 저장</button><a class="button" href="{% url 'core:bank_transaction_list' %}">취소</a></div></form></div>
+{% endblock %}

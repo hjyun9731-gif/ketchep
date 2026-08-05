@@ -1,0 +1,2 @@
+{% extends 'core/base.html' %}
+{% block content %}<div class="page-head"><h1>{{ title }}</h1></div><div class="card form-card"><form method="post" enctype="multipart/form-data">{% csrf_token %}{{ form.as_p }}<div class="actions"><button class="button primary" type="submit">저장</button><button class="button" type="button" onclick="history.back()">취소</button></div></form></div>{% endblock %}
