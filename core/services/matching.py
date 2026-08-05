@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from decimal import Decimal
+import re
 
 from django.db import transaction
 from django.db.models import Q
 
 from core.models import (
-    AccountType, BankTransaction, CardTransaction, ImportIssue, Member, PaymentAllocationLine,
+    AccountType, BankTransaction, CardTransaction, ImportIssue, Member, PayerAlias, PaymentAllocationLine,
     UploadedFile, Vehicle,
 )
 from core.services.billing import suggested_service_fees
@@ -28,48 +29,137 @@ def _all_member_vehicle_data():
     return list(member_map.values())
 
 
-def member_candidates_from_text(payer_text: str):
+def _unique_members(members):
+    return list({member.id: member for member in members}.values())
+
+
+def _digit_fragments(text: str):
+    compact = normalize_vehicle_no(text)
+    return {m.group(0) for m in re.finditer(r'\d{4,}', compact)} | {
+        m.group(0)[-4:] for m in re.finditer(r'\d{4,}', compact)
+    }
+
+
+def _member_memo_aliases(member: Member):
+    memo = member.memo or ''
+    aliases = set()
+    for token in re.split(r'[,/;|·\n()\[\]]+', memo):
+        normalized = normalize_text(token)
+        if normalized:
+            aliases.add(normalized)
+    # Also allow exact search within a free-form note such as "입금자 홍길동".
+    aliases.add(normalize_text(memo))
+    return aliases
+
+
+def member_candidates_from_text(payer_text: str, bank_account_label: str = ''):
     raw = str(payer_text or '')
     compact = normalize_text(raw)
     normalized_vehicle_text = normalize_vehicle_no(raw)
+    digit_fragments = _digit_fragments(raw)
     data = _all_member_vehicle_data()
 
+    # 1. User-confirmed payer aliases. Account-specific aliases have priority.
+    alias_qs = PayerAlias.objects.filter(normalized_alias=compact, auto_apply=True).select_related('member')
+    if bank_account_label:
+        account_aliases = alias_qs.filter(bank_account_label=bank_account_label)
+        if account_aliases.exists():
+            members = _unique_members([row.member for row in account_aliases])
+            return members, '사용자가 저장한 계좌별 입금자 별칭'
+    general_aliases = alias_qs.filter(bank_account_label='')
+    if general_aliases.exists():
+        members = _unique_members([row.member for row in general_aliases])
+        return members, '사용자가 저장한 입금자 별칭'
+
+    # 2. Full current or historical vehicle number contained in payer text.
     exact_vehicle = []
     for entry in data:
         for vehicle in entry['vehicles']:
-            if vehicle.normalized_vehicle_no and vehicle.normalized_vehicle_no in normalized_vehicle_text:
+            number = vehicle.normalized_vehicle_no
+            if number and len(number) >= 6 and number in normalized_vehicle_text:
                 exact_vehicle.append(entry['member'])
                 break
-    exact_vehicle = list({m.id: m for m in exact_vehicle}.values())
+    exact_vehicle = _unique_members(exact_vehicle)
     if exact_vehicle:
-        return exact_vehicle, '완전한 차량번호 일치'
+        return exact_vehicle, '현재·과거 전체 차량번호 일치'
 
+    # 3. Exact member name plus a vehicle fragment/last four digits.
     name_and_fragment = []
     for entry in data:
         member = entry['member']
-        if normalize_text(member.name) and normalize_text(member.name) in compact:
-            for vehicle in entry['vehicles']:
-                number = vehicle.normalized_vehicle_no
-                fragments = {number[-4:], number[-5:]}
-                if any(fragment and fragment in normalized_vehicle_text for fragment in fragments):
-                    name_and_fragment.append(member)
-                    break
-    name_and_fragment = list({m.id: m for m in name_and_fragment}.values())
+        name = normalize_text(member.name)
+        if not name or name not in compact:
+            continue
+        for vehicle in entry['vehicles']:
+            number = vehicle.normalized_vehicle_no
+            fragments = {number[-4:], number[-5:], number[-6:]}
+            if any(fragment and (fragment in normalized_vehicle_text or fragment in digit_fragments) for fragment in fragments):
+                name_and_fragment.append(member)
+                break
+    name_and_fragment = _unique_members(name_and_fragment)
     if name_and_fragment:
-        return name_and_fragment, '성명 + 차량번호 일부 일치'
+        return name_and_fragment, '성명 + 현재·과거 차량번호 일부 일치'
 
+    # 4. Memo alias plus vehicle fragment. This remains review-only in auto_match_bank_transaction.
+    memo_and_fragment = []
+    for entry in data:
+        member = entry['member']
+        aliases = _member_memo_aliases(member)
+        alias_hit = any(alias and (alias == compact or alias in compact or compact in alias) for alias in aliases)
+        if not alias_hit:
+            continue
+        for vehicle in entry['vehicles']:
+            number = vehicle.normalized_vehicle_no
+            fragments = {number[-4:], number[-5:], number[-6:]}
+            if any(fragment and (fragment in normalized_vehicle_text or fragment in digit_fragments) for fragment in fragments):
+                memo_and_fragment.append(member)
+                break
+    memo_and_fragment = _unique_members(memo_and_fragment)
+    if memo_and_fragment:
+        return memo_and_fragment, '미수금 비고 입금자명 + 차량번호 일부 일치'
+
+    # 5. Vehicle last-four or numeric fragment only. Auto only when globally unique.
+    fragment_matches = []
+    for entry in data:
+        for vehicle in entry['vehicles']:
+            number = vehicle.normalized_vehicle_no
+            if any(fragment and number.endswith(fragment[-4:]) for fragment in digit_fragments if len(fragment) >= 4):
+                fragment_matches.append(entry['member'])
+                break
+    fragment_matches = _unique_members(fragment_matches)
+    if len(fragment_matches) == 1:
+        return fragment_matches, '현재·과거 차량 끝번호가 전체에서 유일'
+    if len(fragment_matches) > 1:
+        return fragment_matches, '차량 끝번호 후보 복수'
+
+    # 6. Exact/contained full name. A globally unique full name can auto-match.
     name_matches = []
     for entry in data:
         member = entry['member']
-        if normalize_text(member.name) and normalize_text(member.name) in compact:
+        name = normalize_text(member.name)
+        if name and name in compact:
             name_matches.append(member)
-    name_matches = list({m.id: m for m in name_matches}.values())
+    name_matches = _unique_members(name_matches)
     if len(name_matches) == 1:
         return name_matches, '고유한 성명 일치'
     if len(name_matches) > 1:
         return name_matches, '동명이인'
-    return [], '일치 후보 없음'
 
+    # 7. Free-form memo alias. Always shown for confirmation even when unique.
+    memo_matches = []
+    for entry in data:
+        member = entry['member']
+        for alias in _member_memo_aliases(member):
+            if alias and (alias == compact or alias in compact or compact in alias):
+                memo_matches.append(member)
+                break
+    memo_matches = _unique_members(memo_matches)
+    if len(memo_matches) == 1:
+        return memo_matches, '미수금 비고 입금자명 단독 일치'
+    if len(memo_matches) > 1:
+        return memo_matches, '미수금 비고 입금자명 후보 복수'
+
+    return [], '일치 후보 없음'
 
 def _is_generic_payer(text: str) -> bool:
     compact = normalize_text(text)
@@ -77,6 +167,8 @@ def _is_generic_payer(text: str) -> bool:
 
 
 def infer_recurring_account(member: Member):
+    if member.receivable_account_type in {AccountType.MEMBERSHIP_FEE, AccountType.MANAGEMENT_FEE}:
+        return member.receivable_account_type
     membership_outstanding = member.outstanding(AccountType.MEMBERSHIP_FEE)
     management_outstanding = member.outstanding(AccountType.MANAGEMENT_FEE)
     if membership_outstanding > 0 and management_outstanding == 0:
@@ -122,13 +214,18 @@ def auto_match_bank_transaction(tx: BankTransaction):
         tx.save(update_fields=['status', 'match_reason', 'updated_at'])
         return False
 
-    candidates, reason = member_candidates_from_text(tx.payer_text)
+    candidates, reason = member_candidates_from_text(tx.payer_text, tx.bank_account_label)
     if len(candidates) != 1:
         tx.status = BankTransaction.Status.REVIEW
         tx.match_reason = reason
         tx.save(update_fields=['status', 'match_reason', 'updated_at'])
         return False
     member = candidates[0]
+    if reason.startswith('미수금 비고'):
+        tx.status = BankTransaction.Status.REVIEW
+        tx.match_reason = reason + ' - 사용자 확인 필요'
+        tx.save(update_fields=['status', 'match_reason', 'updated_at'])
+        return False
     expected_certificate = suggested_service_fees(member)[AccountType.CERTIFICATE_FEE]
     certificate_month = bool(
         member.certificate_issued_on

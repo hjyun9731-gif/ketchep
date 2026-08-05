@@ -339,6 +339,7 @@ def process_license_file(uploaded: UploadedFile):
         if not has_system_membership_history:
             if joined:
                 member.membership_status = Member.MembershipStatus.ACTIVE
+                member.receivable_account_type = AccountType.MEMBERSHIP_FEE
                 if join_date:
                     member.membership_started_on = join_date
                 elif not member.membership_billing_anchor:
@@ -346,6 +347,7 @@ def process_license_file(uploaded: UploadedFile):
                     member.membership_billing_anchor = job.period_start
             elif member.membership_status != Member.MembershipStatus.PENDING:
                 member.membership_status = Member.MembershipStatus.NON_MEMBER
+                member.receivable_account_type = AccountType.MANAGEMENT_FEE
         if cert_date:
             member.certificate_issued_on = cert_date
             if old_cert != cert_date:
@@ -648,6 +650,9 @@ def process_receivables_file(uploaded: UploadedFile):
         account_type = _account_type_from_value(_mapped_value(row, uploaded, 'account_type'))
         if not account_type:
             account_type = AccountType.MEMBERSHIP_FEE if member.membership_status == Member.MembershipStatus.ACTIVE else AccountType.MANAGEMENT_FEE
+        if member.receivable_account_type != account_type:
+            member.receivable_account_type = account_type
+            member.save(update_fields=['receivable_account_type', 'updated_at'])
         charge_date = parse_date(_mapped_value(row, uploaded, 'charge_date'), default_year=job.year) or job.period_start
         Charge.objects.get_or_create(
             member=member, account_type=account_type, charge_date=charge_date,

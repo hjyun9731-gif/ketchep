@@ -1,16 +1,55 @@
-GitHub 업로드 요약
+화물협회 자동화 프로그램 GitHub 업로드 방법
+=============================================
 
-1. GitHub Desktop 설치 후 로그인
-2. File > Add Local Repository
-3. 이 폴더(freight_association_github_ready_v1.1.0)를 선택
-4. create a repository 링크가 나오면 클릭
-5. Name: freight-association-system
-6. Initialize this repository with a README 체크하지 않기
-7. Create Repository
-8. Publish repository
-9. Keep this code private 체크 유지
+1. freight_association_github_ready_v2.0.zip 압축을 풉니다.
 
-중요:
-- ZIP 파일 자체를 저장소에 올리지 말고, 압축을 푼 이 폴더를 GitHub Desktop으로 올립니다.
-- .env, 발송닷컴 아이디/비밀번호, 실제 회원 엑셀 파일은 GitHub에 올리지 않습니다.
-- 저장소 최상단에 manage.py, requirements.txt, Dockerfile, railway.json이 보여야 정상입니다.
+2. 압축을 푼 폴더 안에 아래 파일이 바로 보여야 합니다.
+   manage.py
+   requirements.txt
+   Dockerfile
+   railway.json
+   core
+   config
+   templates
+
+3. GitHub Desktop을 실행하고 로그인합니다.
+
+4. File → Add Local Repository → Choose를 누르고 압축을 푼 폴더를 선택합니다.
+
+5. Git 저장소가 아니라는 안내가 나오면 create a repository를 누릅니다.
+
+6. 아래처럼 입력합니다.
+   Name: freight-association-system
+   Description: 화물협회 입금대조 미수금 입금전표 자동화
+   Git ignore: None
+   License: None
+
+7. Create Repository를 누릅니다.
+
+8. 상단 Publish repository를 누릅니다.
+
+9. Keep this code private를 반드시 체크한 상태로 Publish합니다.
+
+10. GitHub 저장소 첫 화면에 아래가 보이면 완료입니다.
+    core/
+    config/
+    docs/
+    templates/
+    Dockerfile
+    manage.py
+    railway.json
+    requirements.txt
+    README.md
+
+절대 올리지 말 것
+-----------------
+.env
+발송닷컴 아이디와 비밀번호
+실제 회원 엑셀
+실제 농협 거래내역
+회원 전화번호·주소 데이터
+개인정보가 들어 있는 화면 캡처
+
+다음 단계
+---------
+GitHub 업로드 → Railway 저장소 연결 → PostgreSQL 추가 → Volume 추가 → 환경변수 등록 → 도메인 생성

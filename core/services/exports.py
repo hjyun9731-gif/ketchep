@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from decimal import Decimal
 from io import BytesIO
 
 from django.db.models import Q
+from django.utils import timezone
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
@@ -261,6 +262,233 @@ def build_workbook(*, job: MonthlyJob | None = None) -> BytesIO:
     ws.column_dimensions['B'].width = 35
     ws['B5'].number_format = '#,##0'
     ws['B6'].number_format = '#,##0'
+
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output
+
+
+def _autosize_sheet(ws, max_width=42):
+    widths = {}
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.value is None:
+                continue
+            widths[cell.column] = max(widths.get(cell.column, 0), len(str(cell.value)))
+    for col, width in widths.items():
+        ws.column_dimensions[get_column_letter(col)].width = min(max(width + 2, 10), max_width)
+    ws.freeze_panes = 'A2'
+    ws.auto_filter.ref = ws.dimensions
+
+
+def _style_header(ws):
+    for cell in ws[1]:
+        cell.font = Font(bold=True, color='374151')
+        cell.fill = PatternFill('solid', fgColor='EEF5F8')
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+
+
+def build_bank_ledger_workbook(job: MonthlyJob) -> BytesIO:
+    """Create the daily bank ledger with K:O fixed as region/vehicle/name/account/amount."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = '2026년 통장'
+    headers = [
+        '거래일시', '입금계좌', '입금자명', '원입금액', '거래상태',
+        '매칭근거', '원본파일', '원본행', '시스템ID', '미배정액',
+        '지역', '차량번호', '이름', '계정', '금액',
+    ]
+    ws.append(headers)
+    txs = BankTransaction.objects.filter(job=job, is_effective=True).select_related('payment', 'uploaded_file').order_by('transaction_at', 'id')
+    for tx in txs:
+        lines = list(tx.payment.allocation_lines.filter(status=PaymentAllocationLine.Status.ACTIVE).select_related('member')) if hasattr(tx, 'payment') else []
+        if not lines:
+            ws.append([
+                tx.transaction_at, tx.bank_account_label, tx.payer_text, tx.amount,
+                tx.get_status_display(), tx.match_reason, tx.uploaded_file.original_name,
+                tx.source_row, tx.id, tx.unallocated_amount,
+                '', '', '', AccountType.SUSPENSE.label, tx.unallocated_amount,
+            ])
+            continue
+        first = True
+        for line in lines:
+            vehicle = line.member.current_vehicle
+            ws.append([
+                tx.transaction_at if first else '', tx.bank_account_label if first else '',
+                tx.payer_text if first else '', tx.amount if first else '',
+                tx.get_status_display() if first else '', tx.match_reason if first else '',
+                tx.uploaded_file.original_name if first else '', tx.source_row if first else '',
+                tx.id, tx.unallocated_amount if first else '',
+                line.member.region, vehicle.vehicle_no if vehicle else '', line.member.name,
+                line.get_account_type_display(), line.amount,
+            ])
+            first = False
+    _style_header(ws)
+    for col in ('D', 'J', 'O'):
+        for cell in ws[col][1:]:
+            cell.number_format = '#,##0'
+    _autosize_sheet(ws)
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output
+
+
+def _monthly_payment_summary(member: Member, job: MonthlyJob):
+    lines = PaymentAllocationLine.objects.filter(
+        member=member,
+        status=PaymentAllocationLine.Status.ACTIVE,
+        payment__is_effective=True,
+        payment__payment_date__date__gte=job.period_start,
+        payment__payment_date__date__lte=job.period_end,
+    ).select_related('payment').order_by('payment__payment_date', 'id')
+    amount = sum((line.amount for line in lines), Decimal('0'))
+    dates = [line.payment.payment_date.strftime('%m.%d') for line in lines]
+    return amount, ', '.join(dates)
+
+
+def build_receivables_workbook(job: MonthlyJob) -> BytesIO:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = '현재명단'
+    headers = [
+        '지역', '계정', '비고', '이름', '차량번호', '상태', '최초부과기준',
+        f'{job.month}월 입금액', f'{job.month}월 입금날짜', '현재 미수금', '선납금', '전화번호', '주소',
+    ]
+    ws.append(headers)
+    members = Member.objects.filter(
+        is_active_record=True,
+        operational_status=Member.OperationalStatus.ACTIVE,
+    ).order_by('region', 'name')
+    for member in members:
+        vehicle = member.current_vehicle
+        paid, dates = _monthly_payment_summary(member, job)
+        prepayment = member.prepayments.aggregate(v=Sum('balance'))['v'] or Decimal('0')
+        account = member.get_receivable_account_type_display() if member.receivable_account_type else (
+            '협회비' if member.membership_status == Member.MembershipStatus.ACTIVE else '관리비'
+        )
+        anchor = member.membership_started_on if account == '협회비' else member.certificate_issued_on
+        ws.append([
+            member.region, account, member.memo, member.name, vehicle.vehicle_no if vehicle else '',
+            member.get_operational_status_display(), anchor, paid, dates, member.total_outstanding,
+            prepayment, member.phone, member.address,
+        ])
+    _style_header(ws)
+    for col in ('H', 'J', 'K'):
+        for cell in ws[col][1:]:
+            cell.number_format = '#,##0'
+    _autosize_sheet(ws)
+
+    closed = wb.create_sheet('폐업명단')
+    closed.append(['지역', '계정', '비고', '이름', '차량번호', '폐업일', '기존 미수금', '선납금', '환불상태', '전화번호', '주소'])
+    for member in Member.objects.filter(
+        is_active_record=True,
+        operational_status=Member.OperationalStatus.CLOSED,
+    ).order_by('-closed_on', 'name'):
+        vehicle = member.current_vehicle
+        prepayment = member.prepayments.aggregate(v=Sum('balance'))['v'] or Decimal('0')
+        pending_refund = member.refunds.filter(status=Refund.Status.PENDING).aggregate(v=Sum('amount'))['v'] or Decimal('0')
+        account = member.get_receivable_account_type_display() if member.receivable_account_type else (
+            '협회비' if member.membership_status == Member.MembershipStatus.ACTIVE else '관리비'
+        )
+        closed.append([
+            member.region, account, member.memo, member.name, vehicle.vehicle_no if vehicle else '',
+            member.closed_on, member.total_outstanding, prepayment, pending_refund, member.phone, member.address,
+        ])
+    _style_header(closed)
+    for col in ('G', 'H', 'I'):
+        for cell in closed[col][1:]:
+            cell.number_format = '#,##0'
+    _autosize_sheet(closed)
+
+    detail = wb.create_sheet('입금일자 상세')
+    detail.append(['입금일시', '원천', '입금자명', '회원', '차량번호', '계정', '반영금액', '상태'])
+    lines = PaymentAllocationLine.objects.filter(
+        status=PaymentAllocationLine.Status.ACTIVE,
+        payment__is_effective=True,
+        payment__payment_date__date__gte=job.period_start,
+        payment__payment_date__date__lte=job.period_end,
+    ).select_related('payment', 'member', 'payment__bank_transaction', 'payment__card_transaction').order_by('payment__payment_date', 'id')
+    for line in lines:
+        payment = line.payment
+        if payment.bank_transaction_id:
+            payer = payment.bank_transaction.payer_text
+        elif payment.card_transaction_id:
+            payer = payment.card_transaction.member_name
+        else:
+            payer = payment.memo
+        vehicle = line.member.current_vehicle
+        detail.append([
+            payment.payment_date, payment.get_source_type_display(), payer, line.member.name,
+            vehicle.vehicle_no if vehicle else '', line.get_account_type_display(), line.amount,
+            payment.get_status_display(),
+        ])
+    _style_header(detail)
+    for cell in detail['G'][1:]:
+        cell.number_format = '#,##0'
+    _autosize_sheet(detail)
+
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output
+
+
+def build_voucher_workbook(job: MonthlyJob) -> BytesIO:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = '입금전표'
+    headers = [
+        '전표번호', '입금일자', '입금계좌', '입금자명', '지역', '차량번호', '회원명',
+        '차변계정', '대변계정', '금액', '적요', '처리상태', '원본거래ID',
+    ]
+    ws.append(headers)
+    txs = BankTransaction.objects.filter(job=job, is_effective=True).select_related('payment').order_by('transaction_at', 'id')
+    daily_seq = defaultdict(int)
+    for tx in txs:
+        payment_date = (tx.transaction_at or timezone.now()).date()
+        daily_seq[payment_date] += 1
+        voucher_no = f'{payment_date:%Y%m%d}-{daily_seq[payment_date]:03d}'
+        lines = list(tx.payment.allocation_lines.filter(status=PaymentAllocationLine.Status.ACTIVE).select_related('member')) if hasattr(tx, 'payment') else []
+        if not lines:
+            ws.append([
+                voucher_no, payment_date, tx.bank_account_label, tx.payer_text, '', '', '',
+                '보통예금', '가수금', tx.amount, tx.payer_text, tx.get_status_display(), tx.id,
+            ])
+            continue
+        allocated_total = Decimal('0')
+        for line in lines:
+            allocated_total += line.amount
+            vehicle = line.member.current_vehicle
+            ws.append([
+                voucher_no, payment_date, tx.bank_account_label, tx.payer_text, line.member.region,
+                vehicle.vehicle_no if vehicle else '', line.member.name, '보통예금',
+                line.get_account_type_display(), line.amount,
+                f'{vehicle.vehicle_no if vehicle else ""} {line.member.name} {line.get_account_type_display()}'.strip(),
+                tx.get_status_display(), tx.id,
+            ])
+        if tx.amount > allocated_total:
+            ws.append([
+                voucher_no, payment_date, tx.bank_account_label, tx.payer_text, '', '', '',
+                '보통예금', '가수금', tx.amount - allocated_total, '미배정 잔액', '확인 필요', tx.id,
+            ])
+    _style_header(ws)
+    for cell in ws['J'][1:]:
+        cell.number_format = '#,##0'
+    _autosize_sheet(ws)
+
+    summary = wb.create_sheet('계정별 합계')
+    summary.append(['계정', '금액'])
+    account_totals = defaultdict(Decimal)
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        account_totals[row[8]] += Decimal(str(row[9] or 0))
+    for account, amount in sorted(account_totals.items()):
+        summary.append([account, amount])
+    _style_header(summary)
+    for cell in summary['B'][1:]:
+        cell.number_format = '#,##0'
+    _autosize_sheet(summary)
 
     output = BytesIO()
     wb.save(output)

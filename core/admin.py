@@ -78,7 +78,7 @@ class AuditLogAdmin(admin.ModelAdmin):
 
 
 for model in [
-    models.MembershipEvent, models.ClosureEvent, models.MemberLink, models.UploadedFile,
+    models.PayerAlias, models.MembershipEvent, models.ClosureEvent, models.MemberLink, models.UploadedFile,
     models.ParsedRow, models.ImportIssue, models.CardTransaction, models.PaymentAllocationLine,
     models.ChargeSettlement, models.Prepayment, models.PrepaymentMovement, models.MessageTemplate,
     models.MessageRecipient, models.SystemSetting,

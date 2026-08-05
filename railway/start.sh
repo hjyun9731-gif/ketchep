@@ -2,6 +2,7 @@
 set -euo pipefail
 
 python manage.py migrate --run-syncdb --noinput
+python manage.py ensure_v2_schema
 python manage.py bootstrap_admin
 python manage.py seed_defaults
 python manage.py collectstatic --noinput

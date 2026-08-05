@@ -38,6 +38,27 @@ class UploadForm(forms.Form):
         return f
 
 
+class BankPasteForm(forms.Form):
+    slot_type = forms.ChoiceField(
+        choices=[
+            (UploadedFile.SlotType.BANK_1, '농협 계좌 1'),
+            (UploadedFile.SlotType.BANK_2, '농협 계좌 2'),
+            (UploadedFile.SlotType.BANK_3, '농협 계좌 3'),
+        ],
+        widget=forms.HiddenInput(),
+    )
+    pasted_text = forms.CharField(
+        label='농협 거래내역 붙여넣기',
+        widget=forms.Textarea(attrs={
+            'rows': 8,
+            'class': 'paste-textarea',
+            'placeholder': '농협 엑셀에서 표 전체를 복사한 뒤 이 칸을 클릭하고 Ctrl+V 하세요.',
+            'autocomplete': 'off',
+            'spellcheck': 'false',
+        }),
+    )
+
+
 class ColumnMappingForm(forms.Form):
     def __init__(self, *args, uploaded: UploadedFile, **kwargs):
         super().__init__(*args, **kwargs)
@@ -59,6 +80,56 @@ class ColumnMappingForm(forms.Form):
             )
 
 
+class QuickMemberForm(forms.Form):
+    name = forms.CharField(label='성명', max_length=100)
+    region = forms.CharField(label='지역', max_length=100)
+    vehicle_no = forms.CharField(label='차량번호', max_length=50)
+    membership_status = forms.ChoiceField(
+        label='구분',
+        choices=[
+            (Member.MembershipStatus.NON_MEMBER, '비회원 · 관리비'),
+            (Member.MembershipStatus.ACTIVE, '협회가입 · 협회비'),
+        ],
+    )
+    certificate_issued_on = forms.DateField(label='자격증명 발급일', required=False, widget=DateInput())
+    membership_started_on = forms.DateField(label='협회 가입일', required=False, widget=DateInput())
+    memo = forms.CharField(label='비고·다른 입금자명', required=False, widget=forms.Textarea(attrs={'rows': 2}))
+
+    def clean(self):
+        cleaned = super().clean()
+        if cleaned.get('membership_status') == Member.MembershipStatus.ACTIVE and not cleaned.get('membership_started_on'):
+            self.add_error('membership_started_on', '협회가입자는 실제 가입일을 입력하세요.')
+        return cleaned
+
+    def save(self):
+        status = self.cleaned_data['membership_status']
+        member = Member.objects.create(
+            name=self.cleaned_data['name'].strip(),
+            region=self.cleaned_data['region'].strip(),
+            membership_status=status,
+            receivable_account_type=(
+                AccountType.MEMBERSHIP_FEE if status == Member.MembershipStatus.ACTIVE
+                else AccountType.MANAGEMENT_FEE
+            ),
+            membership_started_on=self.cleaned_data.get('membership_started_on'),
+            certificate_issued_on=self.cleaned_data.get('certificate_issued_on'),
+            certificate_date_recorded_on=timezone.localdate() if self.cleaned_data.get('certificate_issued_on') else None,
+            first_seen_on=timezone.localdate(),
+            memo=self.cleaned_data.get('memo', '').strip(),
+        )
+        vehicle_no = self.cleaned_data['vehicle_no'].strip()
+        Vehicle.objects.create(
+            member=member,
+            vehicle_no=vehicle_no,
+            normalized_vehicle_no=normalize_vehicle_no(vehicle_no),
+            purpose_char=extract_purpose_char(vehicle_no),
+            start_date=timezone.localdate(),
+            is_current=True,
+            change_reason='신규 명단 간편등록',
+        )
+        return member
+
+
 class MemberForm(forms.ModelForm):
     vehicle_no = forms.CharField(label='현재 차량번호', required=False)
 
@@ -66,7 +137,7 @@ class MemberForm(forms.ModelForm):
         model = Member
         fields = [
             'name', 'birth6', 'phone', 'address', 'official_address', 'official_address_custom',
-            'memo', 'region', 'operational_status', 'membership_status',
+            'memo', 'region', 'receivable_account_type', 'operational_status', 'membership_status',
             'membership_started_on', 'membership_ended_on', 'membership_billing_anchor',
             'management_billing_anchor', 'first_seen_on', 'certificate_issued_on',
             'certificate_date_recorded_on', 'address_needs_check', 'phone_needs_check', 'sms_opt_out',

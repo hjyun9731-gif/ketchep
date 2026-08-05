@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from io import BytesIO
+import zipfile
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -12,13 +14,13 @@ from django.urls import reverse
 from django.utils import timezone
 
 from core.forms import (
-    AllocationFormSet, ArrearsComposeForm, CloseMemberForm, ColumnMappingForm,
-    JoinAssociationForm, LeaveAssociationForm, LegalNoticeForm, MemberForm,
+    AllocationFormSet, ArrearsComposeForm, BankPasteForm, CloseMemberForm, ColumnMappingForm,
+    JoinAssociationForm, LeaveAssociationForm, LegalNoticeForm, MemberForm, QuickMemberForm,
     MessageScheduleEditForm, MonthlyJobForm, RefundForm, RefundMessageForm, RefundPendingForm,
     ReopenMemberForm, TransferMemberForm, UploadForm,
 )
 from core.models import (
-    AccountType, AuditLog, BankTransaction, CardTransaction, Charge, ImportIssue, LegalNotice, Member,
+    AccountType, AuditLog, BankTransaction, CardTransaction, Charge, ImportIssue, LegalNotice, Member, PayerAlias,
     MessageBatch, MessageRecipient, MessageTemplate, MonthlyJob, Payment,
     PaymentAllocationLine, Prepayment, Refund, UploadedFile,
 )
@@ -27,8 +29,11 @@ from core.services.billing import (
     close_member, generate_charges_for_job, join_association, leave_association,
     reopen_member,
 )
-from core.services.exports import build_workbook
+from core.services.exports import (
+    build_bank_ledger_workbook, build_receivables_workbook, build_voucher_workbook, build_workbook,
+)
 from core.services.imports import parse_uploaded_file, process_uploaded_file
+from core.services.paste_import import get_or_create_current_job, process_pasted_bank_text
 from core.services.jobs import create_job_version, clone_latest_uploaded_files, set_current_job
 from core.services.ledger import complete_refund, replace_payment_allocations
 from core.services.matching import (
@@ -38,7 +43,7 @@ from core.services.transfers import transfer_member
 from core.services.messaging import (
     create_arrears_batch, create_refund_batch, retry_failed_batch, send_batch,
 )
-from core.utils import json_safe_model, sha256_file
+from core.utils import json_safe_model, normalize_text, sha256_file
 
 
 def _actor(request):
@@ -47,18 +52,78 @@ def _actor(request):
 
 @login_required
 def dashboard(request):
-    jobs = MonthlyJob.objects.all()
+    today = timezone.localdate()
+    job = get_or_create_current_job(today)
+    # Due-date charges are generated automatically. Future individual billing dates are not posted early.
+    generate_charges_for_job(job, actor=_actor(request))
+    active_members = Member.objects.filter(
+        is_active_record=True,
+        operational_status=Member.OperationalStatus.ACTIVE,
+    )
+    closed_members = Member.objects.filter(
+        is_active_record=True,
+        operational_status=Member.OperationalStatus.CLOSED,
+    )
+    review_statuses = [
+        BankTransaction.Status.UNMATCHED,
+        BankTransaction.Status.REVIEW,
+        BankTransaction.Status.DUPLICATE,
+    ]
+    current_transactions = BankTransaction.objects.filter(job=job, is_effective=True)
+    today_transactions = current_transactions.filter(transaction_at__date=today)
     summary = {
-        'members': Member.objects.filter(is_active_record=True).count(),
-        'outstanding': sum((m.total_outstanding for m in Member.objects.filter(is_active_record=True)), Decimal('0')),
+        'members': active_members.count(),
+        'closed_members': closed_members.count(),
+        'outstanding': sum((m.total_outstanding for m in active_members), Decimal('0')),
+        'today_amount': today_transactions.aggregate(v=Sum('amount'))['v'] or Decimal('0'),
+        'today_count': today_transactions.count(),
+        'review_transactions': current_transactions.filter(status__in=review_statuses).count(),
+        'auto_matched': current_transactions.filter(status=BankTransaction.Status.AUTO_MATCHED).count(),
         'prepayment': Prepayment.objects.aggregate(v=Sum('balance'))['v'] or Decimal('0'),
-        'refund_pending': Refund.objects.filter(status=Refund.Status.PENDING).count(),
-        'review_transactions': BankTransaction.objects.filter(
-            job__is_current=True,
-            status__in=[BankTransaction.Status.UNMATCHED, BankTransaction.Status.REVIEW, BankTransaction.Status.DUPLICATE],
-        ).count(),
     }
-    return render(request, 'core/dashboard.html', {'jobs': jobs, 'summary': summary})
+    recent = current_transactions.select_related('payment').order_by('-transaction_at', '-id')[:12]
+    review_rows = current_transactions.filter(status__in=review_statuses).select_related('payment').order_by('-transaction_at', '-id')[:12]
+    paste_forms = {
+        UploadedFile.SlotType.BANK_1: BankPasteForm(initial={'slot_type': UploadedFile.SlotType.BANK_1}),
+        UploadedFile.SlotType.BANK_2: BankPasteForm(initial={'slot_type': UploadedFile.SlotType.BANK_2}),
+        UploadedFile.SlotType.BANK_3: BankPasteForm(initial={'slot_type': UploadedFile.SlotType.BANK_3}),
+    }
+    return render(request, 'core/dashboard.html', {
+        'job': job,
+        'summary': summary,
+        'recent_transactions': recent,
+        'review_rows': review_rows,
+        'paste_forms': paste_forms,
+        'today': today,
+    })
+
+
+@login_required
+@transaction.atomic
+def bank_paste(request):
+    if request.method != 'POST':
+        raise Http404
+    form = BankPasteForm(request.POST)
+    if not form.is_valid():
+        messages.error(request, '붙여넣기 내용을 확인하세요.')
+        return redirect('core:dashboard')
+    try:
+        result = process_pasted_bank_text(
+            slot_type=form.cleaned_data['slot_type'],
+            pasted_text=form.cleaned_data['pasted_text'],
+            actor=_actor(request),
+        )
+        messages.success(
+            request,
+            '입금내역 처리 완료: '
+            f"신규 {result['created_transactions']}건 · "
+            f"자동매칭 {result['auto_matched']}건 · "
+            f"확인필요 {result['review']}건 · "
+            f"중복제외 {result['skipped_duplicates']}건",
+        )
+    except Exception as exc:
+        messages.error(request, f'입금내역 처리 실패: {exc}')
+    return redirect('core:dashboard')
 
 
 @login_required
@@ -266,9 +331,14 @@ def job_finalize(request, pk):
 @login_required
 def job_export(request, pk):
     job = get_object_or_404(MonthlyJob, pk=pk)
-    output = build_workbook(job=job)
-    filename = f'{job.year}_{job.month:02d}_{job.version_name}_latest.xlsx'
-    return FileResponse(output, as_attachment=True, filename=filename)
+    bundle = BytesIO()
+    with zipfile.ZipFile(bundle, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(f'{job.year}년 통장_완성본.xlsx', build_bank_ledger_workbook(job).getvalue())
+        archive.writestr(f'{job.year}년 {job.month}월 미수금_완성본.xlsx', build_receivables_workbook(job).getvalue())
+        archive.writestr(f'{job.year}년 {job.month}월 입금전표_완성본.xlsx', build_voucher_workbook(job).getvalue())
+    bundle.seek(0)
+    filename = f'{job.year}년_{job.month:02d}월_통장_미수금_입금전표.zip'
+    return FileResponse(bundle, as_attachment=True, filename=filename)
 
 
 @login_required
@@ -282,22 +352,49 @@ def export_all(request):
 def member_list(request):
     q = request.GET.get('q', '').strip()
     status = request.GET.get('status', '')
-    members_qs = Member.objects.filter(is_active_record=True)
+    members_qs = Member.objects.filter(
+        is_active_record=True,
+        operational_status=Member.OperationalStatus.ACTIVE,
+    )
     if q:
         members_qs = members_qs.filter(
             Q(name__icontains=q) | Q(phone__icontains=q) | Q(address__icontains=q)
-            | Q(vehicles__vehicle_no__icontains=q)
+            | Q(vehicles__vehicle_no__icontains=q) | Q(memo__icontains=q)
         ).distinct()
-    if status == 'closed':
-        members_qs = members_qs.filter(operational_status=Member.OperationalStatus.CLOSED)
-    elif status == 'address':
+    if status == 'address':
         members_qs = members_qs.filter(address_needs_check=True)
     elif status == 'phone':
         members_qs = members_qs.filter(phone_needs_check=True)
     elif status == 'sms_opt_out':
         members_qs = members_qs.filter(sms_opt_out=True)
-    members_data = [{'member': m, 'outstanding': m.total_outstanding} for m in members_qs.order_by('name', 'id')[:1000]]
-    return render(request, 'core/member_list.html', {'members_data': members_data, 'q': q, 'status': status})
+    elif status == 'prebilling':
+        today = timezone.localdate()
+        members_qs = members_qs.filter(
+            Q(membership_started_on__isnull=False, membership_started_on__gte=today.replace(day=1))
+            | Q(certificate_issued_on__isnull=False, certificate_issued_on__gte=today.replace(day=1))
+        )
+    members_data = [{'member': m, 'outstanding': m.total_outstanding} for m in members_qs.order_by('name', 'id')[:2000]]
+    return render(request, 'core/member_list.html', {
+        'members_data': members_data, 'q': q, 'status': status, 'closed_mode': False,
+    })
+
+
+@login_required
+def closed_member_list(request):
+    q = request.GET.get('q', '').strip()
+    members_qs = Member.objects.filter(
+        is_active_record=True,
+        operational_status=Member.OperationalStatus.CLOSED,
+    )
+    if q:
+        members_qs = members_qs.filter(
+            Q(name__icontains=q) | Q(phone__icontains=q) | Q(address__icontains=q)
+            | Q(vehicles__vehicle_no__icontains=q) | Q(memo__icontains=q)
+        ).distinct()
+    members_data = [{'member': m, 'outstanding': m.total_outstanding} for m in members_qs.order_by('-closed_on', 'name')[:2000]]
+    return render(request, 'core/member_list.html', {
+        'members_data': members_data, 'q': q, 'status': 'closed', 'closed_mode': True,
+    })
 
 
 @login_required
@@ -321,12 +418,22 @@ def member_detail(request, pk):
 
 @login_required
 def member_create(request):
-    form = MemberForm(request.POST or None)
+    initial = {
+        'name': request.GET.get('name', ''),
+        'vehicle_no': request.GET.get('vehicle_no', ''),
+        'region': request.GET.get('region', ''),
+    }
+    form = QuickMemberForm(request.POST or None, initial=initial)
     if request.method == 'POST' and form.is_valid():
         member = form.save()
-        log_action(action='member_created', instance=member, actor=_actor(request))
+        log_action(action='member_created_quick', instance=member, actor=_actor(request))
+        messages.success(request, '현재명단에 추가했습니다. 최초 부과일은 가입일·자격증명 발급일 한 달 뒤 같은 날짜로 계산됩니다.')
         return redirect('core:member_detail', pk=member.pk)
-    return render(request, 'core/form.html', {'form': form, 'title': '회원 등록'})
+    return render(request, 'core/form.html', {
+        'form': form,
+        'title': '신규 명단 간편추가',
+        'subtitle': '지역·차량번호·성명만 우선 입력하고 나머지 정보는 나중에 보완할 수 있습니다.',
+    })
 
 
 @login_required
@@ -441,7 +548,9 @@ def bank_transaction_list(request):
     txs = BankTransaction.objects.select_related('job', 'uploaded_file', 'payment').filter(job__is_current=True)
     if job_id:
         txs = txs.filter(job_id=job_id)
-    if status:
+    if status == 'review':
+        txs = txs.filter(status__in=[BankTransaction.Status.UNMATCHED, BankTransaction.Status.REVIEW, BankTransaction.Status.DUPLICATE])
+    elif status:
         txs = txs.filter(status=status)
     if q:
         txs = txs.filter(Q(payer_text__icontains=q) | Q(bank_account_label__icontains=q))
@@ -496,6 +605,20 @@ def payment_allocate(request, pk):
             })
         try:
             replace_payment_allocations(payment, rows, reason='화면 수동배정', actor=_actor(request))
+            if request.POST.get('save_payer_alias') and payment.bank_transaction_id and len(rows) == 1:
+                payer = payment.bank_transaction.payer_text.strip()
+                if payer:
+                    PayerAlias.objects.update_or_create(
+                        member=rows[0]['member'],
+                        normalized_alias=normalize_text(payer),
+                        bank_account_label=payment.bank_transaction.bank_account_label,
+                        defaults={
+                            'alias': payer,
+                            'auto_apply': True,
+                            'memo': '입금 배정 화면에서 저장',
+                            'actor': _actor(request),
+                        },
+                    )
             messages.success(request, '입금 배정을 저장했습니다.')
             if payment.bank_transaction_id:
                 return redirect('core:bank_transaction_list')

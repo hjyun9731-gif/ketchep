@@ -61,6 +61,13 @@ class Member(TimeStampedModel):
     official_address_custom = models.BooleanField('공문주소 수동관리', default=False)
     memo = models.TextField('비고', blank=True)
     region = models.CharField('지역', max_length=100, blank=True, db_index=True)
+    receivable_account_type = models.CharField(
+        '미수금 계정', max_length=30, choices=[
+            (AccountType.MEMBERSHIP_FEE, '협회비'),
+            (AccountType.MANAGEMENT_FEE, '관리비'),
+        ], blank=True, db_index=True,
+        help_text='회원별 월 정기계정. 협회비와 관리비는 동시에 사용할 수 없습니다.',
+    )
 
     operational_status = models.CharField(
         '운영상태', max_length=20, choices=OperationalStatus.choices,
@@ -179,6 +186,28 @@ class Vehicle(TimeStampedModel):
 
     def __str__(self):
         return self.vehicle_no
+
+
+class PayerAlias(TimeStampedModel):
+    member = models.ForeignKey(Member, related_name='payer_aliases', on_delete=models.PROTECT)
+    alias = models.CharField('입금자 별칭', max_length=200)
+    normalized_alias = models.CharField('정규화 별칭', max_length=200, db_index=True)
+    bank_account_label = models.CharField('적용 계좌', max_length=100, blank=True)
+    auto_apply = models.BooleanField('다음부터 자동매칭', default=True)
+    memo = models.CharField('메모', max_length=255, blank=True)
+    actor = models.CharField(max_length=50, default='admin')
+
+    class Meta:
+        ordering = ['normalized_alias', 'member__name']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['member', 'normalized_alias', 'bank_account_label'],
+                name='unique_member_payer_alias_per_account',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.alias} → {self.member.name}'
 
 
 class MembershipEvent(TimeStampedModel):

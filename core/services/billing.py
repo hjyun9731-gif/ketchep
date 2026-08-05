@@ -212,6 +212,9 @@ def generate_charges_for_job(job: MonthlyJob, *, actor='admin') -> dict:
         desired = desired_recurring_charge(member, job.year, job.month)
         if not desired:
             continue
+        today = timezone.localdate()
+        if job.year == today.year and job.month == today.month and desired['charge_date'] > today:
+            continue
         key = (member.id, desired['account_type'], desired['charge_date'])
         desired_keys.add(key)
         charge = existing.get(key)
@@ -352,9 +355,10 @@ def join_association(member: Member, join_date: date, *, memo='', actor='admin')
         effective_date=join_date, memo=memo, actor=actor,
     )
     member.membership_status = Member.MembershipStatus.ACTIVE
+    member.receivable_account_type = AccountType.MEMBERSHIP_FEE
     member.membership_started_on = join_date
     member.membership_ended_on = None
-    member.save(update_fields=['membership_status', 'membership_started_on', 'membership_ended_on', 'updated_at'])
+    member.save(update_fields=['membership_status', 'receivable_account_type', 'membership_started_on', 'membership_ended_on', 'updated_at'])
     log_action(action='membership_joined', instance=member, before=before, reason=memo, actor=actor)
     return True
 
@@ -393,8 +397,12 @@ def leave_association(member: Member, leave_date: date, *, memo='', actor='admin
     vehicle = vehicle_for_date(member, leave_date)
     eligible = leave_date.year >= 2027 or (vehicle and vehicle.purpose_char == '배')
     if eligible:
+        member.receivable_account_type = AccountType.MANAGEMENT_FEE
         member.management_billing_anchor = leave_date
-        member.save(update_fields=['management_billing_anchor', 'updated_at'])
+        member.save(update_fields=['receivable_account_type', 'management_billing_anchor', 'updated_at'])
+    else:
+        member.receivable_account_type = ''
+        member.save(update_fields=['receivable_account_type', 'updated_at'])
     log_action(action='membership_left', instance=member, before=before, reason=memo, actor=actor)
     return member
 
