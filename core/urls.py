@@ -22,6 +22,7 @@ urlpatterns = [
 
     path('members/', views.member_list, name='member_list'),
     path('closed-members/', views.closed_member_list, name='closed_member_list'),
+    path('members/export/', views.member_export, name='member_export'),
     path('members/new/', views.member_create, name='member_create'),
     path('members/<int:pk>/', views.member_detail, name='member_detail'),
     path('members/<int:pk>/edit/', views.member_edit, name='member_edit'),

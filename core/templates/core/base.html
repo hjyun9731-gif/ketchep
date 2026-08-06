@@ -8,7 +8,7 @@
   <title>{% block title %}강원 화물협회 업무{% endblock %}</title>
   <link rel="stylesheet" href="{% static 'core/app.css' %}">
 </head>
-<body>
+<body class="{% block body_class %}{% endblock %}">
 {% if request.user.is_authenticated %}
 <header class="app-header">
   <div class="header-inner">

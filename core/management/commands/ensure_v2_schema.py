@@ -5,7 +5,7 @@ from core.models import Member, PayerAlias
 
 
 class Command(BaseCommand):
-    help = '기존 v1 syncdb 데이터베이스에 v2 필드와 테이블을 안전하게 추가합니다.'
+    help = '기존 syncdb 데이터베이스에 누락 필드·테이블·성능 인덱스를 안전하게 추가합니다.'
 
     def handle(self, *args, **options):
         tables = set(connection.introspection.table_names())
@@ -31,3 +31,26 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.SUCCESS('PayerAlias 테이블 생성'))
             else:
                 self.stdout.write('PayerAlias 테이블 이미 존재')
+
+        # The project originally used syncdb without migrations. Add the
+        # composite indexes explicitly so existing Railway databases also get
+        # the performance fix. CREATE INDEX IF NOT EXISTS works on PostgreSQL
+        # and SQLite, the two supported database engines here.
+        tables = set(connection.introspection.table_names())
+        qn = connection.ops.quote_name
+        indexes = [
+            ('idx_member_active_status_name', 'core_member', ['is_active_record', 'operational_status', 'name', 'id']),
+            ('idx_vehicle_member_current', 'core_vehicle', ['member_id', 'is_current', 'id']),
+            ('idx_charge_member_status_job', 'core_charge', ['member_id', 'status', 'monthly_job_id']),
+            ('idx_settlement_charge_active', 'core_chargesettlement', ['charge_id', 'is_active']),
+        ]
+        with connection.cursor() as cursor:
+            for index_name, table_name, columns in indexes:
+                if table_name not in tables:
+                    continue
+                column_sql = ', '.join(qn(column) for column in columns)
+                cursor.execute(
+                    f'CREATE INDEX IF NOT EXISTS {qn(index_name)} '
+                    f'ON {qn(table_name)} ({column_sql})'
+                )
+                self.stdout.write(f'성능 인덱스 확인: {index_name}')

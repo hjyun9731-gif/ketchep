@@ -17,9 +17,9 @@
       {% for m in candidates %}
       <label class="recipient-row {% if not m.can_receive_sms %}disabled{% endif %}">
         <input class="target-check" type="checkbox" name="member_ids" value="{{ m.pk }}" {% if m.can_receive_sms %}checked{% else %}disabled{% endif %}>
-        <span class="recipient-person"><strong>{{ m.name }}</strong><small>{% if m.current_vehicle %}{{ m.current_vehicle.vehicle_no }}{% else %}차량번호 없음{% endif %} · {{ m.phone|default:'전화번호 없음' }}</small></span>
+        <span class="recipient-person"><strong>{{ m.name }}</strong><small>{% if m.current_vehicle_no %}{{ m.current_vehicle_no }}{% else %}차량번호 없음{% endif %} · {{ m.phone|default:'전화번호 없음' }}</small></span>
         <span class="recipient-status">{{ m.get_operational_status_display }}</span>
-        <strong class="recipient-amount">{{ m.total_outstanding|money }}원</strong>
+        <strong class="recipient-amount">{{ m.outstanding_amount|money }}원</strong>
         {% if m.can_receive_sms %}<span class="sendable">발송 가능</span>{% else %}<span class="not-sendable">{% if m.sms_opt_out %}수신거부{% elif m.phone_needs_check %}결번{% else %}번호 없음{% endif %}</span>{% endif %}
       </label>
       {% empty %}<div class="empty"><strong>조건에 맞는 미수금 대상자가 없습니다.</strong></div>{% endfor %}

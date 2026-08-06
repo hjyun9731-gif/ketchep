@@ -1,37 +1,140 @@
 {% extends 'core/base.html' %}{% load core_extras %}
+{% block body_class %}wide-data-page{% endblock %}
 {% block title %}{% if closed_mode %}폐업명단{% else %}현재명단{% endif %}{% endblock %}
 {% block content %}
-<div class="page-head">
-  <div class="page-title"><h1>{% if closed_mode %}폐업명단{% else %}현재명단{% endif %}</h1><p>{% if closed_mode %}폐업한 사람은 현재명단에서 제외하고 이곳에서 과거 미수금과 입금이력을 관리합니다.{% else %}현재 관리 중인 사람과 최초 부과 전 대상자를 함께 확인합니다.{% endif %}</p></div>
-  <div class="page-actions">{% if not closed_mode %}<a class="button" href="{% url 'core:initial_data_import' %}">엑셀로 한꺼번에 추가</a><a class="button primary" href="{% url 'core:member_create' %}">신규 1명 추가</a>{% endif %}</div>
+<div class="member-list-page">
+  <section class="member-list-shell">
+    <div class="member-list-heading">
+      <div>
+        <h1>{% if closed_mode %}폐업명단{% else %}현재명단{% endif %}</h1>
+        <p>{% if closed_mode %}폐업 자료와 남은 미수금·환불 상태를 확인합니다.{% else %}회원정보를 찾고 바로 수정·폐업·양도양수 처리합니다.{% endif %}</p>
+      </div>
+      <div class="member-list-actions">
+        {% if not closed_mode %}
+          <a class="button small" href="{% url 'core:initial_data_import' %}">기존 명단 갱신</a>
+          <a class="button small" href="{% url 'core:member_export' %}?mode=active">엑셀 다운로드</a>
+          <a class="button small primary" href="{% url 'core:member_create' %}">+ 신규 등록</a>
+        {% else %}
+          <a class="button small" href="{% url 'core:member_export' %}?mode=closed">엑셀 다운로드</a>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="member-tabs-line">
+      <a class="{% if not closed_mode %}active{% endif %}" href="{% url 'core:member_list' %}">현재명단 <b>{{ active_count|money }}</b></a>
+      <a class="{% if closed_mode %}active{% endif %}" href="{% url 'core:closed_member_list' %}">폐업명단 <b>{{ closed_count|money }}</b></a>
+    </div>
+
+    <form method="get" class="member-search-bar">
+      <select name="region" aria-label="지역">
+        <option value="">전체 지역</option>
+        {% for item in regions %}<option value="{{ item }}" {% if region == item %}selected{% endif %}>{{ item }}</option>{% endfor %}
+      </select>
+      {% if not closed_mode %}
+      <select name="membership" aria-label="가입 상태">
+        <option value="">가입/미가입</option>
+        <option value="active" {% if membership == 'active' %}selected{% endif %}>협회가입</option>
+        <option value="non_member" {% if membership == 'non_member' %}selected{% endif %}>미가입</option>
+        <option value="pending" {% if membership == 'pending' %}selected{% endif %}>가입대기</option>
+      </select>
+      {% endif %}
+      <select name="field" aria-label="검색 기준">
+        <option value="all" {% if field == 'all' %}selected{% endif %}>통합검색</option>
+        <option value="name" {% if field == 'name' %}selected{% endif %}>성명</option>
+        <option value="vehicle" {% if field == 'vehicle' %}selected{% endif %}>차량번호</option>
+        <option value="phone" {% if field == 'phone' %}selected{% endif %}>전화번호</option>
+        <option value="address" {% if field == 'address' %}selected{% endif %}>주소</option>
+        <option value="management_no" {% if field == 'management_no' %}selected{% endif %}>관리번호</option>
+      </select>
+      <input name="q" value="{{ q }}" placeholder="성명, 차량번호, 전화번호, 주소, 관리번호">
+      <button class="button small primary" type="submit">조회</button>
+      <a class="button small" href="{% if closed_mode %}{% url 'core:closed_member_list' %}{% else %}{% url 'core:member_list' %}{% endif %}">초기화</a>
+    </form>
+
+    <div class="member-result-line">
+      <span>검색 결과 <strong>{{ page_obj.paginator.count|money }}</strong>명</span>
+      <span>{{ page_obj.number }} / {{ page_obj.paginator.num_pages }}페이지 · 페이지당 {{ page_size }}명</span>
+    </div>
+
+    <div class="member-table-wrap">
+      {% if not closed_mode %}
+      <table class="member-dense-table">
+        <thead>
+          <tr>
+            <th class="col-key">관리번호</th>
+            <th class="col-region">지역</th>
+            <th class="col-vehicle">차량번호</th>
+            <th class="col-name">성명</th>
+            <th class="col-birth">생년월일</th>
+            <th class="col-phone">핸드폰</th>
+            <th class="col-membership">가입</th>
+            <th class="col-date">가입일</th>
+            <th class="col-date">자격증명 발급일</th>
+            <th class="col-address">주소</th>
+            <th class="col-money right">미수금</th>
+            <th class="col-manage">관리</th>
+          </tr>
+        </thead>
+        <tbody>
+        {% for member in page_obj %}
+          <tr>
+            <td class="mono" title="{{ member.source_row_key }}">{{ member.source_row_key|short_key }}</td>
+            <td>{{ member.region|default:'-' }}</td>
+            <td><a class="dense-link vehicle-link" href="{% url 'core:member_detail' member.pk %}">{{ member.current_vehicle_no|default:'-' }}</a></td>
+            <td><a class="dense-link name-link" href="{% url 'core:member_detail' member.pk %}">{{ member.name }}</a></td>
+            <td class="mono">{{ member.birth6|birth6_format|default:'-' }}</td>
+            <td class="mono">{{ member.phone|phone_format|default:'-' }}</td>
+            <td>
+              {% if member.membership_status == 'active' %}<span class="mini-status joined">가입</span>
+              {% elif member.membership_status == 'pending' %}<span class="mini-status pending">대기</span>
+              {% else %}<span class="mini-status not-joined">미가입</span>{% endif %}
+            </td>
+            <td class="mono">{{ member.membership_started_on|date:'y. n. j.'|default:'-' }}</td>
+            <td class="mono">{{ member.certificate_issued_on|date:'y. n. j.'|default:'-' }}</td>
+            <td class="address-cell" title="{{ member.address }}">{{ member.address|default:'-' }}</td>
+            <td class="right money {% if member.outstanding_amount > 0 %}has-arrears{% else %}zero-arrears{% endif %}">{{ member.outstanding_amount|money }}원</td>
+            <td class="row-actions">
+              <a class="mini-action edit" href="{% url 'core:member_edit' member.pk %}">수정</a>
+              <a class="mini-action close" href="{% url 'core:member_close' member.pk %}">폐업</a>
+              <a class="mini-action transfer" href="{% url 'core:member_transfer' member.pk %}">양도양수</a>
+            </td>
+          </tr>
+        {% empty %}<tr><td colspan="12" class="empty">검색 결과가 없습니다.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <table class="member-dense-table closed-table">
+        <thead><tr><th>관리번호</th><th>지역</th><th>차량번호</th><th>성명</th><th>핸드폰</th><th>폐업일</th><th>주소</th><th class="right">남은 미수금</th><th>관리</th></tr></thead>
+        <tbody>
+        {% for member in page_obj %}
+          <tr>
+            <td class="mono" title="{{ member.source_row_key }}">{{ member.source_row_key|short_key }}</td>
+            <td>{{ member.region|default:'-' }}</td>
+            <td><a class="dense-link vehicle-link" href="{% url 'core:member_detail' member.pk %}">{{ member.current_vehicle_no|default:'-' }}</a></td>
+            <td><a class="dense-link name-link" href="{% url 'core:member_detail' member.pk %}">{{ member.name }}</a></td>
+            <td class="mono">{{ member.phone|phone_format|default:'-' }}</td>
+            <td class="mono">{{ member.closed_on|date:'y. n. j.'|default:'-' }}</td>
+            <td class="address-cell" title="{{ member.address }}">{{ member.address|default:'-' }}</td>
+            <td class="right money {% if member.outstanding_amount > 0 %}has-arrears{% else %}zero-arrears{% endif %}">{{ member.outstanding_amount|money }}원</td>
+            <td class="row-actions">
+              <a class="mini-action edit" href="{% url 'core:member_edit' member.pk %}">수정</a>
+              <a class="mini-action reopen" href="{% url 'core:member_reopen' member.pk %}">재등록</a>
+              <a class="mini-action detail" href="{% url 'core:member_detail' member.pk %}">상세</a>
+            </td>
+          </tr>
+        {% empty %}<tr><td colspan="9" class="empty">검색 결과가 없습니다.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+      {% endif %}
+    </div>
+
+    {% if page_obj.paginator.num_pages > 1 %}
+    <nav class="dense-pagination" aria-label="명단 페이지">
+      {% if page_obj.has_previous %}<a href="?q={{ q|urlencode }}&region={{ region|urlencode }}&membership={{ membership|urlencode }}&field={{ field|urlencode }}&page_size={{ page_size }}&page=1">처음</a><a href="?q={{ q|urlencode }}&region={{ region|urlencode }}&membership={{ membership|urlencode }}&field={{ field|urlencode }}&page_size={{ page_size }}&page={{ page_obj.previous_page_number }}">이전</a>{% endif %}
+      <span><b>{{ page_obj.number }}</b> / {{ page_obj.paginator.num_pages }}</span>
+      {% if page_obj.has_next %}<a href="?q={{ q|urlencode }}&region={{ region|urlencode }}&membership={{ membership|urlencode }}&field={{ field|urlencode }}&page_size={{ page_size }}&page={{ page_obj.next_page_number }}">다음</a><a href="?q={{ q|urlencode }}&region={{ region|urlencode }}&membership={{ membership|urlencode }}&field={{ field|urlencode }}&page_size={{ page_size }}&page={{ page_obj.paginator.num_pages }}">마지막</a>{% endif %}
+    </nav>
+    {% endif %}
+  </section>
 </div>
-
-<div class="tabs"><a class="{% if not closed_mode %}active{% endif %}" href="{% url 'core:member_list' %}">현재명단</a><a class="{% if closed_mode %}active{% endif %}" href="{% url 'core:closed_member_list' %}">폐업명단</a></div>
-
-<section class="card">
-  <form method="get" class="filter-bar">
-    <input class="search" name="q" value="{{ q }}" placeholder="이름 또는 차량번호 검색">
-    {% if not closed_mode %}<select name="status"><option value="">상태 전체</option><option value="prebilling" {% if status == 'prebilling' %}selected{% endif %}>최초 부과 전</option><option value="address" {% if status == 'address' %}selected{% endif %}>주소 확인 필요</option><option value="phone" {% if status == 'phone' %}selected{% endif %}>연락처 확인 필요</option></select>{% endif %}
-    <button class="button" type="submit">검색</button>
-  </form>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>이름</th><th>차량번호</th><th>지역</th><th>계정</th><th>{% if closed_mode %}폐업일{% else %}부과 기준일{% endif %}</th><th>상태</th><th>전화번호</th><th class="right">미수금</th></tr></thead>
-      <tbody>
-      {% for row in members_data %}
-        <tr>
-          <td><a class="table-link" href="{% url 'core:member_detail' row.member.pk %}">{{ row.member.name }}</a></td>
-          <td>{% if row.member.current_vehicle %}<strong>{{ row.member.current_vehicle.vehicle_no }}</strong>{% else %}-{% endif %}</td>
-          <td>{{ row.member.region|default:'-' }}</td>
-          <td>{% if row.member.receivable_account_type %}{{ row.member.get_receivable_account_type_display }}{% elif row.member.membership_status == 'active' %}협회비{% else %}관리비{% endif %}</td>
-          <td>{% if closed_mode %}{{ row.member.closed_on|date:'Y-m-d'|default:'-' }}{% elif row.member.membership_status == 'active' %}{{ row.member.membership_started_on|date:'m-d'|default:'-' }}{% else %}{{ row.member.certificate_issued_on|date:'m-d'|default:'-' }}{% endif %}</td>
-          <td><span class="badge {{ row.member.operational_status|status_class }}">{{ row.member.get_operational_status_display }}</span></td>
-          <td>{{ row.member.phone|default:'-' }}</td>
-          <td class="right money">{{ row.outstanding|money }}원</td>
-        </tr>
-      {% empty %}<tr><td colspan="8" class="empty">명단이 없습니다.</td></tr>{% endfor %}
-      </tbody>
-    </table>
-  </div>
-</section>
 {% endblock %}

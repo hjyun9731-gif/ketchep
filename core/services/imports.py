@@ -252,6 +252,7 @@ def parse_uploaded_file(uploaded: UploadedFile):
                 )
 
         valid_sheet_count = 0
+        parsed_row_objects = []
         for sheet_name, rows in sheets:
             if not rows:
                 continue
@@ -303,7 +304,7 @@ def parse_uploaded_file(uploaded: UploadedFile):
                         value = raw.get(str(mapped))
                     canonical[field] = json_safe_value(value)
                 raw['__canonical__'] = canonical
-                ParsedRow.objects.create(
+                parsed_row_objects.append(ParsedRow(
                     uploaded_file=uploaded,
                     sheet_name=sheet_name,
                     source_row=source_index,
@@ -314,7 +315,7 @@ def parse_uploaded_file(uploaded: UploadedFile):
                         'canonical': canonical,
                         'raw': raw,
                     }),
-                )
+                ))
                 row_count += 1
             summary['sheets'].append({
                 'name': sheet_name,
@@ -324,6 +325,9 @@ def parse_uploaded_file(uploaded: UploadedFile):
                 'mapping': sheet_mapping,
             })
             summary['rows'] += row_count
+
+        if parsed_row_objects:
+            ParsedRow.objects.bulk_create(parsed_row_objects, batch_size=750)
 
         uploaded.detected_headers = detected_headers
         uploaded.header_row = chosen_header_row
@@ -407,7 +411,31 @@ def _active_member_candidates(name, birth6):
 def process_license_file(uploaded: UploadedFile):
     job = uploaded.job
     created = updated = vehicle_changes = issues = reopened = 0
-    for row in uploaded.parsed_rows.all():
+
+    # Load the existing ledger once. The former implementation ran several
+    # member/vehicle/history queries for every Excel row, which made a few
+    # thousand members take minutes on Railway.
+    existing_members = list(
+        Member.objects.filter(is_active_record=True)
+        .prefetch_related('vehicles', 'membership_events')
+    )
+    by_name = defaultdict(list)
+    by_identity = defaultdict(list)
+    current_vehicle_cache = {}
+    membership_history_ids = set()
+    for existing in existing_members:
+        normalized_name = _normalize_person_name(existing.name)
+        by_name[normalized_name].append(existing)
+        if existing.birth6:
+            by_identity[(normalized_name, existing.birth6)].append(existing)
+        current_vehicle_cache[id(existing)] = next(
+            (vehicle for vehicle in existing.vehicles.all() if vehicle.is_current),
+            None,
+        )
+        if list(existing.membership_events.all()):
+            membership_history_ids.add(existing.id)
+
+    for row in uploaded.parsed_rows.all().iterator(chunk_size=750):
         name = _normalize_person_name(_mapped_value(row, uploaded, 'name'))
         vehicle_no = str(_mapped_value(row, uploaded, 'vehicle_no') or '').strip()
         vehicle_digits = ''.join(ch for ch in normalize_vehicle_no(vehicle_no) if ch.isdigit())
@@ -434,17 +462,17 @@ def process_license_file(uploaded: UploadedFile):
         join_date = parse_date(join_raw, default_year=job.year)
         cert_date = parse_date(_mapped_value(row, uploaded, 'certificate_date'), default_year=job.year)
 
-        name_candidates = list(Member.objects.filter(name=name, is_active_record=True))
+        name_candidates = list(by_name.get(name, []))
         if not birth6 and name_candidates:
             ImportIssue.objects.create(
                 uploaded_file=uploaded, sheet_name=row.sheet_name, source_row=row.source_row,
                 issue_type='name_only_no_auto_link',
                 message='주민번호 앞자리가 없어 이름만으로 기존 회원에 자동 연결하지 않았습니다.',
-                candidate_member_ids=[m.id for m in name_candidates], raw_data=row.raw_data,
+                candidate_member_ids=[m.id for m in name_candidates if m.id], raw_data=row.raw_data,
             )
             issues += 1
             continue
-        candidates = list(_active_member_candidates(name, birth6))
+        candidates = list(by_identity.get((name, birth6), [])) if birth6 else []
         exact_address = [m for m in candidates if normalize_text(m.address) == normalize_text(address)] if address else []
         if len(exact_address) == 1:
             member = exact_address[0]
@@ -453,7 +481,7 @@ def process_license_file(uploaded: UploadedFile):
                 uploaded_file=uploaded, sheet_name=row.sheet_name, source_row=row.source_row,
                 issue_type='same_name_birth_address_diff',
                 message='성명과 주민번호 앞자리는 같지만 주소가 달라 자동 연결하지 않았습니다.',
-                candidate_member_ids=[candidates[0].id], raw_data=row.raw_data,
+                candidate_member_ids=[candidates[0].id] if candidates[0].id else [], raw_data=row.raw_data,
             )
             issues += 1
             continue
@@ -462,7 +490,7 @@ def process_license_file(uploaded: UploadedFile):
                 uploaded_file=uploaded, sheet_name=row.sheet_name, source_row=row.source_row,
                 issue_type='duplicate_identity_candidates',
                 message='동일인 후보가 여러 명입니다.',
-                candidate_member_ids=[m.id for m in candidates], raw_data=row.raw_data,
+                candidate_member_ids=[m.id for m in candidates if m.id], raw_data=row.raw_data,
             )
             issues += 1
             continue
@@ -472,6 +500,7 @@ def process_license_file(uploaded: UploadedFile):
         is_new = member.pk is None
         old_cert = member.certificate_issued_on
         was_closed = member.operational_status == Member.OperationalStatus.CLOSED
+        has_system_membership_history = bool(member.pk and member.id in membership_history_ids)
 
         member.phone = phone or member.phone
         member.address = address or member.address
@@ -488,7 +517,6 @@ def process_license_file(uploaded: UploadedFile):
         member.membership_mark_raw = str(join_raw or '')
         joined = bool(join_date or normalize_text(join_raw) in {'o', '0', '○', '가입', 'y', 'yes'})
         # 화면에서 처리한 가입·탈퇴 이력이 있으면 업로드 파일이 그 상태를 덮어쓰지 않는다.
-        has_system_membership_history = bool(member.pk and member.membership_events.exists())
         if not has_system_membership_history:
             if joined:
                 member.membership_status = Member.MembershipStatus.ACTIVE
@@ -496,7 +524,6 @@ def process_license_file(uploaded: UploadedFile):
                 if join_date:
                     member.membership_started_on = join_date
                 elif not member.membership_billing_anchor:
-                    # 날짜 없는 O 표시는 기존 가입자로 보고 해당 작업월 1일을 부과 기준으로 둔다.
                     member.membership_billing_anchor = job.period_start
             elif member.membership_status != Member.MembershipStatus.PENDING:
                 member.membership_status = Member.MembershipStatus.NON_MEMBER
@@ -511,6 +538,19 @@ def process_license_file(uploaded: UploadedFile):
             reentry_date = cert_date or job.period_start
             member.operational_status = Member.OperationalStatus.ACTIVE
             member.re_registered_on = reentry_date
+        member.source_row_key = f'{uploaded.id}:{row.sheet_name}:{row.source_row}'
+        member.save()
+
+        if is_new:
+            created += 1
+            by_name[name].append(member)
+            if birth6:
+                by_identity[(name, birth6)].append(member)
+            current_vehicle_cache[id(member)] = None
+        else:
+            updated += 1
+
+        if was_closed:
             ClosureEvent.objects.create(
                 member=member,
                 event_type=ClosureEvent.EventType.REOPEN,
@@ -519,22 +559,16 @@ def process_license_file(uploaded: UploadedFile):
                 actor='admin',
             )
             reopened += 1
-        member.source_row_key = f'{uploaded.id}:{row.sheet_name}:{row.source_row}'
-        member.save()
-        if is_new:
-            created += 1
-        else:
-            updated += 1
 
         normalized = normalize_vehicle_no(vehicle_no)
-        current = member.current_vehicle
+        current = current_vehicle_cache.get(id(member))
         if not current or current.normalized_vehicle_no != normalized:
             if current:
                 current.is_current = False
                 current.end_date = job.period_start
                 current.change_reason = '전체면허자현황 갱신'
                 current.save(update_fields=['is_current', 'end_date', 'change_reason', 'updated_at'])
-            Vehicle.objects.create(
+            current = Vehicle.objects.create(
                 member=member,
                 vehicle_no=vehicle_no,
                 normalized_vehicle_no=normalized,
@@ -543,6 +577,7 @@ def process_license_file(uploaded: UploadedFile):
                 is_current=True,
                 change_reason='전체면허자현황 갱신',
             )
+            current_vehicle_cache[id(member)] = current
             vehicle_changes += 1
 
     uploaded.parse_status = UploadedFile.ParseStatus.PROCESSED
@@ -797,6 +832,17 @@ def process_receivables_file(uploaded: UploadedFile):
             if len(digits) >= 4:
                 by_name_suffix[(normalized_name, digits[-4:])].append(member)
 
+    existing_charges = {
+        (charge.member_id, charge.account_type): charge
+        for charge in Charge.objects.filter(
+            charge_date=job.period_start,
+            monthly_job__isnull=True,
+        )
+    }
+    member_updates = {}
+    charges_to_create = []
+    charges_to_update = {}
+
     def unique(items):
         result = []
         seen = set()
@@ -806,7 +852,7 @@ def process_receivables_file(uploaded: UploadedFile):
                 result.append(item)
         return result
 
-    for row in uploaded.parsed_rows.all():
+    for row in uploaded.parsed_rows.all().iterator(chunk_size=750):
         name = _normalize_person_name(_mapped_value(row, uploaded, 'name'))
         balance = parse_decimal(_mapped_value(row, uploaded, 'balance'))
         if not name or balance is None:
@@ -868,15 +914,21 @@ def process_receivables_file(uploaded: UploadedFile):
             if normalize_text(memo) not in normalize_text(existing_memo):
                 member.memo = '\n'.join(part for part in [existing_memo, memo] if part).strip()
                 changed = True
+        memo_normalized = normalize_text(member.memo)
+        if '결번' in memo_normalized and not member.phone_needs_check:
+            member.phone_needs_check = True
+            changed = True
+        if '수신거부' in memo_normalized and not member.sms_opt_out:
+            member.sms_opt_out = True
+            changed = True
         if changed:
-            member.save()
+            member.updated_at = timezone.now()
+            member_updates[member.id] = member
 
         if balance < 0:
             from core.services.ledger import replace_payment_allocations
 
-            opening_key = (
-                f'기초 선납금:{uploaded.id}:{row.sheet_name}:{row.source_row}'
-            )
+            opening_key = f'기초 선납금:{uploaded.id}:{row.sheet_name}:{row.source_row}'
             payment = Payment.objects.filter(
                 source_type=Payment.SourceType.OPENING,
                 memo=opening_key,
@@ -915,21 +967,42 @@ def process_receivables_file(uploaded: UploadedFile):
             updated += 1
             continue
 
-        charge_date = job.period_start
-        _, was_created = Charge.objects.update_or_create(
-            member=member,
-            account_type=account_type,
-            charge_date=charge_date,
-            monthly_job=None,
-            defaults={
-                'amount': balance,
-                'source_rule': f'opening_receivable:{match_reason}',
-            },
-        )
-        if was_created:
+        key = (member.id, account_type)
+        charge = existing_charges.get(key)
+        if charge is None:
+            charge = Charge(
+                member=member,
+                account_type=account_type,
+                charge_date=job.period_start,
+                monthly_job=None,
+                amount=balance,
+                source_rule=f'opening_receivable:{match_reason}',
+            )
+            existing_charges[key] = charge
+            charges_to_create.append(charge)
             created += 1
         else:
+            charge.amount = balance
+            charge.source_rule = f'opening_receivable:{match_reason}'
+            if charge.pk:
+                charge.updated_at = timezone.now()
+                charges_to_update[id(charge)] = charge
             updated += 1
+
+    if member_updates:
+        Member.objects.bulk_update(
+            list(member_updates.values()),
+            ['region', 'receivable_account_type', 'memo', 'phone_needs_check', 'sms_opt_out', 'updated_at'],
+            batch_size=500,
+        )
+    if charges_to_create:
+        Charge.objects.bulk_create(charges_to_create, batch_size=750)
+    if charges_to_update:
+        Charge.objects.bulk_update(
+            list(charges_to_update.values()),
+            ['amount', 'source_rule', 'updated_at'],
+            batch_size=750,
+        )
 
     uploaded.parse_status = UploadedFile.ParseStatus.PROCESSED
     uploaded.parse_summary = {

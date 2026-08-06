@@ -7,8 +7,10 @@ import zipfile
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db import transaction
-from django.db.models import Q, Sum
-from django.http import FileResponse, Http404
+from django.core.paginator import Paginator
+from django.db.models import DecimalField, ExpressionWrapper, F, OuterRef, Q, Subquery, Sum, Value
+from django.db.models.functions import Coalesce
+from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -21,9 +23,9 @@ from core.forms import (
     ReopenMemberForm, SimpleExcelUploadForm, TransferMemberForm, UploadForm,
 )
 from core.models import (
-    AccountType, AuditLog, BankTransaction, CardTransaction, Charge, ImportIssue, LegalNotice, Member, PayerAlias,
+    AccountType, AuditLog, BankTransaction, CardTransaction, Charge, ChargeSettlement, ImportIssue, LegalNotice, Member, PayerAlias,
     MessageBatch, MessageRecipient, MessageTemplate, MonthlyJob, Payment,
-    PaymentAllocationLine, Prepayment, Refund, UploadedFile,
+    PaymentAllocationLine, Prepayment, Refund, UploadedFile, Vehicle,
 )
 from core.services.audit import log_action
 from core.services.billing import (
@@ -51,7 +53,60 @@ from core.services.messaging import (
     sync_batch_results,
     update_batch_schedule,
 )
-from core.utils import json_safe_model, normalize_text, sha256_file
+from core.utils import json_safe_model, normalize_text, normalize_vehicle_no, sha256_file
+
+
+MONEY_FIELD = DecimalField(max_digits=14, decimal_places=2)
+MONEY_ZERO_VALUE = Value(Decimal('0.00'), output_field=MONEY_FIELD)
+
+
+def _member_queryset_with_financials(queryset):
+    """Attach current vehicle and outstanding balance without per-member queries."""
+    current_vehicle = (
+        Vehicle.objects.filter(member_id=OuterRef('pk'), is_current=True)
+        .order_by('-start_date', '-id')
+        .values('vehicle_no')[:1]
+    )
+    charge_total = (
+        Charge.objects.filter(
+            member_id=OuterRef('pk'),
+            status=Charge.Status.POSTED,
+        )
+        .filter(Q(monthly_job__isnull=True) | Q(monthly_job__is_current=True))
+        .values('member_id')
+        .annotate(total=Sum('amount'))
+        .values('total')[:1]
+    )
+    settlement_total = (
+        ChargeSettlement.objects.filter(
+            charge__member_id=OuterRef('pk'),
+            charge__status=Charge.Status.POSTED,
+            is_active=True,
+        )
+        .filter(Q(charge__monthly_job__isnull=True) | Q(charge__monthly_job__is_current=True))
+        .values('charge__member_id')
+        .annotate(total=Sum('amount'))
+        .values('total')[:1]
+    )
+    return (
+        queryset.annotate(
+            current_vehicle_no=Subquery(current_vehicle),
+            charge_total_fast=Coalesce(
+                Subquery(charge_total, output_field=MONEY_FIELD),
+                MONEY_ZERO_VALUE,
+            ),
+            settlement_total_fast=Coalesce(
+                Subquery(settlement_total, output_field=MONEY_FIELD),
+                MONEY_ZERO_VALUE,
+            ),
+        )
+        .annotate(
+            outstanding_amount=ExpressionWrapper(
+                F('charge_total_fast') - F('settlement_total_fast'),
+                output_field=MONEY_FIELD,
+            )
+        )
+    )
 
 
 def _actor(request):
@@ -420,50 +475,173 @@ def export_all(request):
 @login_required
 def member_list(request):
     q = request.GET.get('q', '').strip()
-    status = request.GET.get('status', '')
+    region = request.GET.get('region', '').strip()
+    membership = request.GET.get('membership', '').strip()
+    field = request.GET.get('field', 'all').strip() or 'all'
+    try:
+        page_size = int(request.GET.get('page_size', '50'))
+    except (TypeError, ValueError):
+        page_size = 50
+    page_size = page_size if page_size in {50, 100} else 50
+
     members_qs = Member.objects.filter(
         is_active_record=True,
         operational_status=Member.OperationalStatus.ACTIVE,
     )
+    if region:
+        members_qs = members_qs.filter(region=region)
+    if membership in {choice for choice, _ in Member.MembershipStatus.choices}:
+        members_qs = members_qs.filter(membership_status=membership)
     if q:
-        members_qs = members_qs.filter(
-            Q(name__icontains=q) | Q(phone__icontains=q) | Q(address__icontains=q)
-            | Q(vehicles__vehicle_no__icontains=q) | Q(memo__icontains=q)
-        ).distinct()
-    if status == 'address':
-        members_qs = members_qs.filter(address_needs_check=True)
-    elif status == 'phone':
-        members_qs = members_qs.filter(phone_needs_check=True)
-    elif status == 'sms_opt_out':
-        members_qs = members_qs.filter(sms_opt_out=True)
-    elif status == 'prebilling':
-        today = timezone.localdate()
-        members_qs = members_qs.filter(
-            Q(membership_started_on__isnull=False, membership_started_on__gte=today.replace(day=1))
-            | Q(certificate_issued_on__isnull=False, certificate_issued_on__gte=today.replace(day=1))
-        )
-    members_data = [{'member': m, 'outstanding': m.total_outstanding} for m in members_qs.order_by('name', 'id')[:2000]]
+        digits = ''.join(ch for ch in q if ch.isdigit())
+        vehicle_q = normalize_vehicle_no(q)
+        if field == 'name':
+            members_qs = members_qs.filter(name__icontains=q)
+        elif field == 'vehicle':
+            members_qs = members_qs.filter(vehicles__normalized_vehicle_no__icontains=vehicle_q).distinct()
+        elif field == 'phone':
+            members_qs = members_qs.filter(phone__icontains=digits or q)
+        elif field == 'address':
+            members_qs = members_qs.filter(Q(address__icontains=q) | Q(official_address__icontains=q))
+        elif field == 'management_no':
+            members_qs = members_qs.filter(source_row_key__icontains=q)
+        else:
+            query = (
+                Q(name__icontains=q) | Q(phone__icontains=digits or q)
+                | Q(address__icontains=q) | Q(official_address__icontains=q)
+                | Q(source_row_key__icontains=q) | Q(birth6__icontains=digits or q)
+                | Q(memo__icontains=q)
+            )
+            if vehicle_q:
+                query |= Q(vehicles__normalized_vehicle_no__icontains=vehicle_q)
+            members_qs = members_qs.filter(query).distinct()
+
+    members_qs = _member_queryset_with_financials(members_qs).order_by('region', 'current_vehicle_no', 'name', 'id')
+    page_obj = Paginator(members_qs, page_size).get_page(request.GET.get('page'))
     return render(request, 'core/member_list.html', {
-        'members_data': members_data, 'q': q, 'status': status, 'closed_mode': False,
+        'page_obj': page_obj,
+        'q': q,
+        'region': region,
+        'membership': membership,
+        'field': field,
+        'page_size': page_size,
+        'closed_mode': False,
+        'regions': Member.objects.filter(is_active_record=True).exclude(region='').values_list('region', flat=True).distinct().order_by('region'),
+        'active_count': Member.objects.filter(is_active_record=True, operational_status=Member.OperationalStatus.ACTIVE).count(),
+        'closed_count': Member.objects.filter(is_active_record=True, operational_status=Member.OperationalStatus.CLOSED).count(),
     })
 
 
 @login_required
 def closed_member_list(request):
     q = request.GET.get('q', '').strip()
+    region = request.GET.get('region', '').strip()
+    field = request.GET.get('field', 'all').strip() or 'all'
+    try:
+        page_size = int(request.GET.get('page_size', '50'))
+    except (TypeError, ValueError):
+        page_size = 50
+    page_size = page_size if page_size in {50, 100} else 50
+
     members_qs = Member.objects.filter(
         is_active_record=True,
         operational_status=Member.OperationalStatus.CLOSED,
     )
+    if region:
+        members_qs = members_qs.filter(region=region)
     if q:
-        members_qs = members_qs.filter(
-            Q(name__icontains=q) | Q(phone__icontains=q) | Q(address__icontains=q)
-            | Q(vehicles__vehicle_no__icontains=q) | Q(memo__icontains=q)
-        ).distinct()
-    members_data = [{'member': m, 'outstanding': m.total_outstanding} for m in members_qs.order_by('-closed_on', 'name')[:2000]]
+        digits = ''.join(ch for ch in q if ch.isdigit())
+        vehicle_q = normalize_vehicle_no(q)
+        if field == 'name':
+            members_qs = members_qs.filter(name__icontains=q)
+        elif field == 'vehicle':
+            members_qs = members_qs.filter(vehicles__normalized_vehicle_no__icontains=vehicle_q).distinct()
+        elif field == 'phone':
+            members_qs = members_qs.filter(phone__icontains=digits or q)
+        elif field == 'address':
+            members_qs = members_qs.filter(Q(address__icontains=q) | Q(official_address__icontains=q))
+        elif field == 'management_no':
+            members_qs = members_qs.filter(source_row_key__icontains=q)
+        else:
+            query = (
+                Q(name__icontains=q) | Q(phone__icontains=digits or q)
+                | Q(address__icontains=q) | Q(official_address__icontains=q)
+                | Q(source_row_key__icontains=q) | Q(birth6__icontains=digits or q)
+                | Q(memo__icontains=q)
+            )
+            if vehicle_q:
+                query |= Q(vehicles__normalized_vehicle_no__icontains=vehicle_q)
+            members_qs = members_qs.filter(query).distinct()
+
+    members_qs = _member_queryset_with_financials(members_qs).order_by('-closed_on', 'region', 'current_vehicle_no', 'name', 'id')
+    page_obj = Paginator(members_qs, page_size).get_page(request.GET.get('page'))
     return render(request, 'core/member_list.html', {
-        'members_data': members_data, 'q': q, 'status': 'closed', 'closed_mode': True,
+        'page_obj': page_obj,
+        'q': q,
+        'region': region,
+        'membership': '',
+        'field': field,
+        'page_size': page_size,
+        'closed_mode': True,
+        'regions': Member.objects.filter(is_active_record=True).exclude(region='').values_list('region', flat=True).distinct().order_by('region'),
+        'active_count': Member.objects.filter(is_active_record=True, operational_status=Member.OperationalStatus.ACTIVE).count(),
+        'closed_count': Member.objects.filter(is_active_record=True, operational_status=Member.OperationalStatus.CLOSED).count(),
     })
+
+
+@login_required
+def member_export(request):
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    mode = request.GET.get('mode', 'active')
+    closed = mode == 'closed'
+    status = Member.OperationalStatus.CLOSED if closed else Member.OperationalStatus.ACTIVE
+    rows = _member_queryset_with_financials(
+        Member.objects.filter(is_active_record=True, operational_status=status)
+    ).order_by('region', 'current_vehicle_no', 'name', 'id')
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = '폐업명단' if closed else '현재명단'
+    if closed:
+        headers = ['관리번호', '지역', '차량번호', '성명', '생년월일', '핸드폰', '폐업일', '주소', '남은 미수금']
+    else:
+        headers = ['관리번호', '지역', '차량번호', '성명', '생년월일', '핸드폰', '가입상태', '가입일', '자격증명 발급일', '주소', '미수금']
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.font = Font(bold=True, color='FFFFFF')
+        cell.fill = PatternFill('solid', fgColor='28314A')
+        cell.alignment = Alignment(horizontal='center')
+
+    for member in rows.iterator(chunk_size=500):
+        common = [
+            member.source_row_key or '', member.region or '', member.current_vehicle_no or '', member.name,
+            member.birth6 or '', member.phone or '',
+        ]
+        if closed:
+            values = common + [member.closed_on, member.address or '', float(member.outstanding_amount or 0)]
+        else:
+            values = common + [member.get_membership_status_display(), member.membership_started_on, member.certificate_issued_on, member.address or '', float(member.outstanding_amount or 0)]
+        ws.append(values)
+
+    widths = [16, 12, 18, 12, 12, 16, 12, 13, 16, 42, 14]
+    for index, width in enumerate(widths[:len(headers)], start=1):
+        ws.column_dimensions[get_column_letter(index)].width = width
+    ws.freeze_panes = 'A2'
+    ws.auto_filter.ref = ws.dimensions
+    for row in ws.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(vertical='center')
+
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    filename = '폐업명단.xlsx' if closed else '현재명단.xlsx'
+    response = HttpResponse(output.getvalue(), content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    response['Content-Disposition'] = f'attachment; filename*=UTF-8\'\'{filename}'
+    return response
 
 
 @login_required
@@ -822,7 +1000,11 @@ def arrears_compose(request):
         members_qs = members_qs.filter(address_needs_check=True)
     elif contact == 'not_sent':
         members_qs = members_qs.exclude(message_recipients__status__in=[MessageRecipient.Status.ACCEPTED, MessageRecipient.Status.SENT]).distinct()
-    candidates = [m for m in members_qs if m.total_outstanding > 0]
+    candidates = list(
+        _member_queryset_with_financials(members_qs)
+        .filter(outstanding_amount__gt=0)
+        .order_by('name', 'id')[:1500]
+    )
     form = ArrearsComposeForm(request.POST or None)
     if request.method == 'POST' and form.is_valid():
         selected = request.POST.getlist('member_ids')
