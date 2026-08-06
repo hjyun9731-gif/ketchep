@@ -1,10 +1,70 @@
 {% extends 'core/base.html' %}{% load core_extras %}
-{% block title %}{{ member.name }}{% endblock %}{% block content %}
-<div class="page-head"><div><h1>{{ member.name }} <span class="badge {{ member.operational_status|status_class }}">{{ member.get_operational_status_display }}</span></h1><p class="muted">{% if member.current_vehicle %}{{ member.current_vehicle.vehicle_no }}{% else %}차량 없음{% endif %} · {{ member.get_membership_status_display }} · 미수 {{ member.total_outstanding|money }}원</p></div><div class="actions wrap"><a class="button" href="{% url 'core:member_edit' member.pk %}">수정</a>{% if member.operational_status == 'active' %}<a class="button danger" href="{% url 'core:member_close' member.pk %}">폐업</a>{% else %}<a class="button" href="{% url 'core:member_reopen' member.pk %}">재등록</a>{% endif %}{% if member.membership_status == 'active' %}<a class="button" href="{% url 'core:member_leave' member.pk %}">탈퇴</a>{% else %}<a class="button" href="{% url 'core:member_join' member.pk %}">협회가입</a>{% endif %}{% if member.operational_status == 'active' %}<a class="button" href="{% url 'core:member_transfer' member.pk %}">명의 이전</a>{% endif %}<a class="button" href="{% url 'core:refund_create' member.pk %}">환불대기 등록</a><a class="button" href="{% url 'core:legal_notice_create' member.pk %}">내용증명 등록</a></div></div>
-<div class="grid two"><div class="card"><h2>회원정보</h2><dl class="details"><dt>주민번호 앞자리</dt><dd>{{ member.birth6|default:'-' }}</dd><dt>전화번호</dt><dd>{{ member.phone|default:'-' }}</dd><dt>주소</dt><dd>{{ member.address|default:'-' }}</dd><dt>공문주소</dt><dd>{{ member.official_address|default:'-' }}</dd><dt>지역</dt><dd>{{ member.region|default:'-' }}</dd><dt>자격증명 발급일</dt><dd>{{ member.certificate_issued_on|date:'Y-m-d'|default:'-' }}</dd><dt>협회가입일</dt><dd>{{ member.membership_started_on|date:'Y-m-d'|default:'-' }}</dd><dt>미수 연락상태</dt><dd>{{ member.get_collection_status_display }}</dd><dt>비고</dt><dd class="preline">{{ member.memo|default:'-' }}</dd></dl>{% if member.address_needs_check %}<form method="post" action="{% url 'core:address_check_clear' member.pk %}">{% csrf_token %}<button class="button warning">주소 확인 완료 처리</button></form>{% endif %}</div>
-<div class="card"><h2>잔액</h2><div class="big-number">미수금 {{ member.total_outstanding|money }}원</div><h3>선납금</h3><ul class="plain-list">{% for p in prepayments %}<li>{{ p.get_account_type_display }} <strong>{{ p.balance|money }}원</strong></li>{% empty %}<li class="muted">선납금 없음</li>{% endfor %}</ul><h3>환불</h3><ul class="plain-list">{% for r in refunds %}<li>{{ r.get_status_display }} · {{ r.amount|money }}원 {% if r.status == 'pending' %}<a href="{% url 'core:refund_complete' r.pk %}">완료처리</a>{% endif %}</li>{% empty %}<li class="muted">환불 내역 없음</li>{% endfor %}</ul></div></div>
-{% if outgoing_links or incoming_links %}<div class="card"><h2>명의·회원 연결 이력</h2><ul class="timeline">{% for link in outgoing_links %}<li>{{ link.effective_date|date:'Y-m-d' }} · {{ link.get_link_type_display }} → <a href="{% url 'core:member_detail' link.new_member.pk %}">{{ link.new_member.name }}</a>{% if link.arrears_transferred %} · 미수금 승계{% endif %}</li>{% endfor %}{% for link in incoming_links %}<li>{{ link.effective_date|date:'Y-m-d' }} · <a href="{% url 'core:member_detail' link.old_member.pk %}">{{ link.old_member.name }}</a> → {{ link.get_link_type_display }}{% if link.arrears_transferred %} · 미수금 승계{% endif %}</li>{% endfor %}</ul></div>{% endif %}
-<div class="card"><h2>부과·미수 내역</h2><div class="table-scroll"><table><thead><tr><th>부과일</th><th>계정</th><th class="right">부과액</th><th class="right">납부액</th><th class="right">잔액</th><th>상태</th></tr></thead><tbody>{% for c in charges %}<tr><td>{{ c.charge_date|date:'Y-m-d' }}</td><td>{{ c.get_account_type_display }}</td><td class="right">{{ c.amount|money }}</td><td class="right">{{ c.settled_amount|money }}</td><td class="right"><strong>{{ c.balance|money }}</strong></td><td>{{ c.get_status_display }}</td></tr>{% empty %}<tr><td colspan="6" class="empty">부과 내역 없음</td></tr>{% endfor %}</tbody></table></div></div>
-<div class="card"><h2>입금 배정 내역</h2><div class="table-scroll"><table><thead><tr><th>입금일</th><th>계정</th><th class="right">배정액</th><th>출처</th><th>메모</th></tr></thead><tbody>{% for line in payments %}<tr><td>{{ line.payment.payment_date|date:'Y-m-d H:i' }}</td><td>{{ line.get_account_type_display }}</td><td class="right">{{ line.amount|money }}</td><td>{{ line.payment.get_source_type_display }}</td><td>{{ line.memo }}</td></tr>{% empty %}<tr><td colspan="5" class="empty">입금 내역 없음</td></tr>{% endfor %}</tbody></table></div></div>
-<div class="grid two"><div class="card"><h2>문자 이력</h2><ul class="timeline">{% for m in messages_history %}<li><strong>{{ m.batch.get_message_type_display }}</strong> · {{ m.get_status_display }}<br><span class="muted">{{ m.created_at|date:'Y-m-d H:i' }} · {{ m.phone }}</span></li>{% empty %}<li>문자 이력 없음</li>{% endfor %}</ul></div><div class="card"><h2>내용증명</h2><ul class="timeline">{% for n in notices %}<li><a href="{% url 'core:legal_notice_edit' n.pk %}">{{ n.sent_date|date:'Y-m-d' }} · {{ n.get_delivery_status_display }}</a><br><span class="muted">등기번호 {{ n.registered_no|default:'-' }}</span></li>{% empty %}<li>발송 이력 없음</li>{% endfor %}</ul></div></div>
+{% block title %}{{ member.name }}{% endblock %}
+{% block content %}
+<div class="page-head member-summary">
+  <div class="member-identity">
+    <span class="member-avatar">{{ member.name|slice:':1' }}</span>
+    <div><a class="back-link" href="{% if member.operational_status == 'closed' %}{% url 'core:closed_member_list' %}{% else %}{% url 'core:member_list' %}{% endif %}">← 명단</a><h1>{{ member.name }} <span class="badge {{ member.operational_status|status_class }}">{{ member.get_operational_status_display }}</span></h1><p>{% if member.current_vehicle %}{{ member.current_vehicle.vehicle_no }}{% else %}차량번호 없음{% endif %} · {{ member.get_membership_status_display }} · 미수 {{ member.total_outstanding|money }}원</p></div>
+  </div>
+  <div class="page-actions">
+    <a class="button primary" href="{% url 'core:member_edit' member.pk %}">회원정보 수정</a>
+    <details class="header-menu">
+      <summary>업무 처리 <span>▾</span></summary>
+      <div class="menu-panel">
+        {% if member.operational_status == 'active' %}<a href="{% url 'core:member_close' member.pk %}">폐업 처리</a>{% else %}<a href="{% url 'core:member_reopen' member.pk %}">재등록</a>{% endif %}
+        {% if member.membership_status == 'active' %}<a href="{% url 'core:member_leave' member.pk %}">협회 탈퇴</a>{% else %}<a href="{% url 'core:member_join' member.pk %}">협회 가입</a>{% endif %}
+        {% if member.operational_status == 'active' %}<a href="{% url 'core:member_transfer' member.pk %}">명의 이전</a>{% endif %}
+        <div class="menu-separator"></div>
+        <a href="{% url 'core:refund_create' member.pk %}">환불대기 등록</a>
+        <a href="{% url 'core:legal_notice_create' member.pk %}">내용증명 등록</a>
+      </div>
+    </details>
+  </div>
+</div>
+
+<div class="detail-grid">
+  <div class="stack">
+    <section class="card">
+      <div class="card-head"><div><h2>기본정보</h2><p>입금대조와 연락에 사용하는 정보입니다.</p></div></div>
+      <div class="card-body info-grid">
+        <div class="info-item"><span>차량번호</span><strong>{% if member.current_vehicle %}{{ member.current_vehicle.vehicle_no }}{% else %}-{% endif %}</strong></div>
+        <div class="info-item"><span>지역</span><strong>{{ member.region|default:'-' }}</strong></div>
+        <div class="info-item"><span>전화번호</span><strong>{{ member.phone|default:'-' }}</strong></div>
+        <div class="info-item"><span>주민번호 앞자리</span><strong>{{ member.birth6|default:'-' }}</strong></div>
+        <div class="info-item"><span>기본 주소</span><strong>{{ member.address|default:'-' }}</strong></div>
+        <div class="info-item"><span>공문 주소</span><strong>{{ member.official_address|default:'-' }}</strong></div>
+        <div class="info-item"><span>자격증명 발급일</span><strong>{{ member.certificate_issued_on|date:'Y-m-d'|default:'-' }}</strong></div>
+        <div class="info-item"><span>협회가입일</span><strong>{{ member.membership_started_on|date:'Y-m-d'|default:'-' }}</strong></div>
+        <div class="info-item"><span>미수 연락상태</span><strong>{{ member.get_collection_status_display }}</strong></div>
+        <div class="info-item"><span>비고</span><strong class="preline">{{ member.memo|default:'-' }}</strong></div>
+      </div>
+      {% if member.address_needs_check %}<div class="card-body" style="padding-top:0"><form method="post" action="{% url 'core:address_check_clear' member.pk %}">{% csrf_token %}<button class="button warning">주소 확인 완료</button></form></div>{% endif %}
+    </section>
+
+    {% if outgoing_links or incoming_links %}
+    <section class="card card-pad"><h2 class="section-title">명의·회원 연결 이력</h2><ul class="timeline">{% for link in outgoing_links %}<li>{{ link.effective_date|date:'Y-m-d' }} · {{ link.get_link_type_display }} → <a class="table-link" href="{% url 'core:member_detail' link.new_member.pk %}">{{ link.new_member.name }}</a>{% if link.arrears_transferred %} · 미수금 승계{% endif %}</li>{% endfor %}{% for link in incoming_links %}<li>{{ link.effective_date|date:'Y-m-d' }} · <a class="table-link" href="{% url 'core:member_detail' link.old_member.pk %}">{{ link.old_member.name }}</a> → {{ link.get_link_type_display }}{% if link.arrears_transferred %} · 미수금 승계{% endif %}</li>{% endfor %}</ul></section>
+    {% endif %}
+  </div>
+
+  <aside class="stack">
+    <section class="card card-pad">
+      <div class="balance-box"><span>현재 미수금</span><strong>{{ member.total_outstanding|money }}원</strong></div>
+      <h3 style="margin:18px 0 6px;font-size:14px">선납금</h3>
+      <ul class="mini-list">{% for p in prepayments %}<li><span>{{ p.get_account_type_display }}</span><strong>{{ p.balance|money }}원</strong></li>{% empty %}<li><span class="muted">선납금 없음</span></li>{% endfor %}</ul>
+      <h3 style="margin:18px 0 6px;font-size:14px">환불</h3>
+      <ul class="mini-list">{% for r in refunds %}<li><span>{{ r.get_status_display }}</span><strong>{{ r.amount|money }}원</strong>{% if r.status == 'pending' %}<a class="button small" href="{% url 'core:refund_complete' r.pk %}">완료</a>{% endif %}</li>{% empty %}<li><span class="muted">환불 내역 없음</span></li>{% endfor %}</ul>
+    </section>
+    <section class="card card-pad"><h2 class="section-title">최근 문자</h2><ul class="timeline">{% for m in messages_history %}<li><strong>{{ m.batch.get_message_type_display }}</strong> · {{ m.get_status_display }}<br><span class="muted">{{ m.created_at|date:'Y-m-d H:i' }} · {{ m.phone }}</span></li>{% empty %}<li>문자 이력 없음</li>{% endfor %}</ul></section>
+    <section class="card card-pad"><h2 class="section-title">내용증명</h2><ul class="timeline">{% for n in notices %}<li><a class="table-link" href="{% url 'core:legal_notice_edit' n.pk %}">{{ n.sent_date|date:'Y-m-d' }} · {{ n.get_delivery_status_display }}</a><br><span class="muted">등기번호 {{ n.registered_no|default:'-' }}</span></li>{% empty %}<li>발송 이력 없음</li>{% endfor %}</ul></section>
+  </aside>
+</div>
+
+<section class="card">
+  <div class="card-head"><div><h2>부과·미수 내역</h2><p>부과액, 납부액과 남은 잔액입니다.</p></div></div>
+  <div class="table-wrap"><table><thead><tr><th>부과일</th><th>계정</th><th class="right">부과액</th><th class="right">납부액</th><th class="right">잔액</th><th>상태</th></tr></thead><tbody>{% for c in charges %}<tr><td>{{ c.charge_date|date:'Y-m-d' }}</td><td>{{ c.get_account_type_display }}</td><td class="right">{{ c.amount|money }}원</td><td class="right">{{ c.settled_amount|money }}원</td><td class="right money">{{ c.balance|money }}원</td><td><span class="badge {{ c.status|status_class }}">{{ c.get_status_display }}</span></td></tr>{% empty %}<tr><td colspan="6" class="empty">부과 내역이 없습니다.</td></tr>{% endfor %}</tbody></table></div>
+</section>
+<section class="card">
+  <div class="card-head"><div><h2>입금 배정 내역</h2><p>통장과 카드에서 이 회원에게 반영된 입금입니다.</p></div></div>
+  <div class="table-wrap"><table><thead><tr><th>입금일</th><th>계정</th><th class="right">배정액</th><th>출처</th><th>메모</th></tr></thead><tbody>{% for line in payments %}<tr><td>{{ line.payment.payment_date|date:'Y-m-d H:i' }}</td><td>{{ line.get_account_type_display }}</td><td class="right money">{{ line.amount|money }}원</td><td>{{ line.payment.get_source_type_display }}</td><td>{{ line.memo|default:'-' }}</td></tr>{% empty %}<tr><td colspan="5" class="empty">입금 내역이 없습니다.</td></tr>{% endfor %}</tbody></table></div>
+</section>
 {% endblock %}

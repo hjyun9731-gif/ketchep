@@ -278,7 +278,6 @@ class LegalNoticeForm(forms.ModelForm):
 class ArrearsComposeForm(forms.Form):
     due_date = forms.DateField(label='납부기한', widget=DateInput())
     scheduled_at = forms.DateTimeField(label='예약일시', required=False, widget=DateTimeInput())
-    send_now = forms.BooleanField(label='즉시 발송', required=False)
 
 
 class RefundMessageForm(forms.Form):

@@ -1,5 +1,16 @@
 {% extends 'core/base.html' %}
-{% block title %}문자발송{% endblock %}{% block content %}
-<div class="page-head"><div><h1>문자발송</h1><p class="muted">즉시·예약 발송과 실패 건 재발송을 관리합니다.</p></div><div class="actions"><a class="button primary" href="{% url 'core:arrears_compose' %}">미수금 문자</a><a class="button" href="{% url 'core:refund_message_compose' %}">환불 문자</a></div></div>
-<div class="card"><table><thead><tr><th>생성일</th><th>종류</th><th>예약일시</th><th>상태</th><th>발송번호</th><th></th></tr></thead><tbody>{% for b in batches %}<tr><td>{{ b.created_at|date:'Y-m-d H:i' }}</td><td>{{ b.get_message_type_display }}</td><td>{{ b.scheduled_at|date:'Y-m-d H:i'|default:'즉시' }}</td><td>{{ b.get_status_display }}</td><td>{{ b.provider_job_no|default:'-' }}</td><td><a class="button small" href="{% url 'core:message_batch_detail' b.pk %}">열기</a></td></tr>{% empty %}<tr><td colspan="6" class="empty">발송내역이 없습니다.</td></tr>{% endfor %}</tbody></table></div>
+{% block title %}문자발송{% endblock %}
+{% block content %}
+<div class="page-head"><div class="page-title"><h1>문자발송</h1><p>보낼 문자 종류를 먼저 선택한 뒤 대상자와 날짜를 확인합니다.</p></div></div>
+<div class="action-grid">
+  <a class="action-card" href="{% url 'core:arrears_compose' %}"><span class="action-card-icon">미</span><div><strong>미수금 문자</strong><small>미수금이 있는 대상자에게 납부 안내문자를 보냅니다.</small></div><b>→</b></a>
+  <a class="action-card" href="{% url 'core:refund_message_compose' %}"><span class="action-card-icon">환</span><div><strong>환불 문자</strong><small>폐업 후 선납금 환불 안내 또는 완료문자를 보냅니다.</small></div><b>→</b></a>
+</div>
+<section class="card">
+  <div class="card-head"><div><h2>최근 발송내역</h2><p>미리보기, 예약과 발송 결과를 다시 열어볼 수 있습니다.</p></div></div>
+  <div class="table-wrap"><table><thead><tr><th>만든 날짜</th><th>문자 종류</th><th>발송 시점</th><th>상태</th><th></th></tr></thead><tbody>
+  {% for b in batches %}<tr><td>{{ b.created_at|date:'Y-m-d H:i' }}</td><td><strong>{{ b.get_message_type_display }}</strong></td><td>{{ b.scheduled_at|date:'Y-m-d H:i'|default:'즉시 발송' }}</td><td><span class="badge {{ b.status|status_class }}">{{ b.get_status_display }}</span></td><td class="table-actions"><a class="button small" href="{% url 'core:message_batch_detail' b.pk %}">열기</a></td></tr>
+  {% empty %}<tr><td colspan="5" class="empty">아직 발송내역이 없습니다.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
 {% endblock %}

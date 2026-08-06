@@ -821,11 +821,12 @@ def arrears_compose(request):
         if not selected:
             messages.error(request, '대상자를 선택하세요.')
         else:
+            scheduled_at = form.cleaned_data['scheduled_at']
             batch = create_arrears_batch(
                 selected,
                 due_date=form.cleaned_data['due_date'],
-                scheduled_at=form.cleaned_data['scheduled_at'],
-                immediate=True,
+                scheduled_at=scheduled_at,
+                immediate=not bool(scheduled_at),
                 actor=_actor(request),
             )
             return redirect('core:message_batch_detail', pk=batch.pk)

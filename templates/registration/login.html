@@ -5,13 +5,12 @@
 <body class="login-body">
   <main class="login-shell">
     <section class="login-visual">
-      <div class="login-brand"><i>협</i><span>강원 화물협회</span></div>
-      <div class="login-copy"><h2>복잡한 협회 업무를<br>한 화면에서 정리하세요.</h2><p>입금대조, 미수금, 회원정보, 문자발송과 환불업무를 연결해 처리합니다.</p></div>
+      <div class="login-brand"><i>강</i><span>강원 화물협회</span></div>
+      <div class="login-copy"><h2>입금대조부터<br>미수금까지 한곳에서.</h2><p>매일 반복하는 거래대조, 명단관리, 카드결제와 문자업무를 연결해 처리합니다.</p></div>
     </section>
     <section class="login-card">
-      <h1>업무관리 로그인</h1>
-      <p class="muted">공용 관리자 계정으로 로그인하세요.</p>
-      <form method="post">{% csrf_token %}{{ form.as_p }}{% if form.errors %}<div class="alert error">아이디 또는 비밀번호를 확인하세요.</div>{% endif %}<button class="button primary full">로그인</button></form>
+      <h1>업무관리 로그인</h1><p class="muted">관리자 계정으로 로그인하세요.</p>
+      <form method="post">{% csrf_token %}{{ form.as_p }}{% if form.errors %}<div class="alert error">아이디 또는 비밀번호를 확인하세요.</div>{% endif %}<button class="button primary full" type="submit">로그인</button></form>
     </section>
   </main>
 </body>
