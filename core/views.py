@@ -77,8 +77,8 @@ def _save_and_process_excel(*, job, slot_type, file_obj):
     parse_uploaded_file(uploaded)
     if uploaded.parse_status == UploadedFile.ParseStatus.NEEDS_MAPPING:
         raise ValueError(
-            f'{uploaded.get_slot_type_display()} 파일의 제목행을 자동으로 찾지 못했습니다. '
-            '현재 사용하는 원본 파일을 그대로 올렸는지 확인하세요.'
+            uploaded.parse_error
+            or f'{uploaded.get_slot_type_display()} 파일에서 필요한 열을 찾지 못했습니다.'
         )
     return uploaded, process_uploaded_file(uploaded)
 
@@ -158,6 +158,7 @@ def initial_data_import(request):
                 f"회원 신규 {license_result.get('created_members', 0)}명 · "
                 f"회원 갱신 {license_result.get('updated_members', 0)}명 · "
                 f"기초 미수금 {receivable_result.get('opening_charges', 0)}건 · "
+                f"선납금 {receivable_result.get('opening_prepayments', 0)}건 · "
                 f'확인 필요 {issue_count}건',
             )
             return redirect('core:member_list')

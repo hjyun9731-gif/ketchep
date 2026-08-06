@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter, defaultdict
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -61,9 +62,11 @@ HEADER_ALIASES = {
         'settlement_date': ['정산일', '입금일', '지급일'],
     },
     UploadedFile.SlotType.RECEIVABLES: {
-        'name': ['성명', '이름', '회원명'],
-        'vehicle_no': ['차량번호', '차번', '등록번호'],
+        'region': ['지역', '시군', '시군구', '관할'],
         'account_type': ['계정', '구분', '부과구분', '계정과목'],
+        'memo': ['비고', '특이사항', '메모'],
+        'vehicle_no': ['차량번호', '차번', '등록번호'],
+        'name': ['성명', '이름', '회원명'],
         'charge_date': ['부과일', '부과일자', '기준일', '월'],
         'amount': ['부과금', '부과액', '금액'],
         'balance': ['미수금', '잔액', '미납액'],
@@ -139,23 +142,63 @@ def read_workbook(path: str):
     raise ValueError('지원하지 않는 파일 형식입니다.')
 
 
-def detect_header(rows, slot_type: str, scan_limit: int = 30):
+def _find_column_by_alias(row, aliases):
+    """Return the column index for the highest-priority matching alias.
+
+    Field alias order matters. For example, mobile-phone headers are preferred
+    over a landline ``전화번호`` column when both are present.
+    """
+    normalized_row = [normalize_header(value) for value in row]
+    for alias in aliases:
+        normalized_alias = normalize_header(alias)
+        for col_index, value in enumerate(normalized_row):
+            if value == normalized_alias:
+                return col_index
+    return None
+
+
+def _latest_receivable_balance_column(rows, header_index):
+    """Find the latest monthly ``N월 미수금`` column that actually contains data."""
+    header = rows[header_index]
+    candidates = []
+    for col_index, value in enumerate(header):
+        normalized = normalize_header(value)
+        match = re.fullmatch(r'(\d{1,2})월미수금', normalized)
+        if not match:
+            continue
+        month = int(match.group(1))
+        if not 1 <= month <= 12:
+            continue
+        nonempty = 0
+        for row in rows[header_index + 1:]:
+            cell = row[col_index] if col_index < len(row) else None
+            if cell not in (None, ''):
+                nonempty += 1
+        candidates.append((month, nonempty, col_index))
+    populated = [item for item in candidates if item[1] > 0]
+    target = max(populated or candidates, default=None, key=lambda item: item[0])
+    return target[2] if target else None
+
+
+def detect_header(rows, slot_type: str, scan_limit: int = 60):
     aliases = HEADER_ALIASES.get(slot_type, {})
-    alias_to_field = {}
-    for field, names in aliases.items():
-        for name in names:
-            alias_to_field[normalize_header(name)] = field
     best = None
     for index, row in enumerate(rows[:scan_limit]):
         mapping = {}
-        score = 0
-        for col_index, value in enumerate(row):
-            normalized = normalize_header(value)
-            if normalized in alias_to_field:
-                field = alias_to_field[normalized]
-                if field not in mapping:
-                    mapping[field] = col_index
-                    score += 1
+        for field, names in aliases.items():
+            col_index = _find_column_by_alias(row, names)
+            if col_index is not None:
+                mapping[field] = col_index
+
+        # The legacy receivables workbook labels balances as "1월 미수금",
+        # "2월 미수금" ... rather than a plain "미수금" column. Select the
+        # latest month with real values, ignoring future blank month blocks.
+        if slot_type == UploadedFile.SlotType.RECEIVABLES:
+            balance_col = _latest_receivable_balance_column(rows, index)
+            if balance_col is not None:
+                mapping['balance'] = balance_col
+
+        score = len(mapping)
         if best is None or score > best[0]:
             best = (score, index, mapping)
     return best or (0, 0, {})
@@ -178,45 +221,123 @@ def parse_uploaded_file(uploaded: UploadedFile):
     uploaded.import_issues.all().delete()
     try:
         sheets = read_workbook(uploaded.file.path)
-        summary = {'sheets': [], 'rows': 0}
+        summary = {'sheets': [], 'rows': 0, 'skipped_sheets': []}
         detected_headers = []
         chosen_header_row = None
-        mapping = uploaded.column_mapping or {}
+        best_mapping = {}
+        best_score = -1
+        manual_mapping = uploaded.column_mapping or {}
+        required_fields = REQUIRED_FIELDS.get(uploaded.slot_type, set())
 
+        # The real license workbook contains helper/company/summary sheets.
+        # When the normal "개인" and "택배" sheets exist, only those are the
+        # current one-row-per-vehicle member ledgers.
+        normalized_sheet_names = {normalize_text(name) for name, _ in sheets}
+        use_primary_license_sheets = (
+            uploaded.slot_type == UploadedFile.SlotType.LICENSE
+            and bool(normalized_sheet_names & {'개인', '택배'})
+        )
+
+        # The real receivables workbook also contains summaries and prior-year
+        # copies. Prefer the current-year detailed ledger.
+        preferred_receivables_sheet = ''
+        if uploaded.slot_type == UploadedFile.SlotType.RECEIVABLES:
+            exact = normalize_text(f'{uploaded.job.year}년회비내역')
+            if exact in normalized_sheet_names:
+                preferred_receivables_sheet = exact
+            else:
+                preferred_receivables_sheet = next(
+                    (name for name in normalized_sheet_names if '회비내역' in name),
+                    '',
+                )
+
+        valid_sheet_count = 0
         for sheet_name, rows in sheets:
             if not rows:
                 continue
+            normalized_sheet_name = normalize_text(sheet_name)
+            if use_primary_license_sheets and normalized_sheet_name not in {'개인', '택배'}:
+                summary['skipped_sheets'].append({
+                    'name': sheet_name, 'reason': '보조·업체·집계 시트 제외',
+                })
+                continue
+            if preferred_receivables_sheet and normalized_sheet_name != preferred_receivables_sheet:
+                summary['skipped_sheets'].append({
+                    'name': sheet_name, 'reason': '현재연도 회비내역 시트가 아님',
+                })
+                continue
+
             score, header_index, detected_mapping = detect_header(rows, uploaded.slot_type)
-            if chosen_header_row is None or score > len(mapping):
-                chosen_header_row = header_index + 1
-                if not mapping:
-                    mapping = detected_mapping
+            sheet_mapping = manual_mapping or detected_mapping
+            missing = required_fields - set(sheet_mapping)
+            if missing:
+                summary['skipped_sheets'].append({
+                    'name': sheet_name,
+                    'reason': '필수 열 없음: ' + ', '.join(sorted(missing)),
+                    'header_row': header_index + 1,
+                    'score': score,
+                })
+                continue
+
+            valid_sheet_count += 1
             headers = _headers_with_unique_names(rows[header_index])
-            if not detected_headers:
+            if score > best_score:
+                best_score = score
+                best_mapping = dict(sheet_mapping)
                 detected_headers = headers
+                chosen_header_row = header_index + 1
+
             row_count = 0
             for source_index, values in enumerate(rows[header_index + 1:], start=header_index + 2):
                 if not any(v not in (None, '') for v in values):
                     continue
-                raw = {headers[i]: json_safe_value(values[i] if i < len(values) else None) for i in range(len(headers))}
+                raw = {
+                    headers[i]: json_safe_value(values[i] if i < len(values) else None)
+                    for i in range(len(headers))
+                }
+                canonical = {}
+                for field, mapped in sheet_mapping.items():
+                    if isinstance(mapped, int):
+                        value = values[mapped] if mapped < len(values) else None
+                    else:
+                        value = raw.get(str(mapped))
+                    canonical[field] = json_safe_value(value)
+                raw['__canonical__'] = canonical
                 ParsedRow.objects.create(
                     uploaded_file=uploaded,
                     sheet_name=sheet_name,
                     source_row=source_index,
                     raw_data=raw,
-                    row_hash=stable_hash(raw),
+                    row_hash=stable_hash({
+                        'sheet': sheet_name,
+                        'row': source_index,
+                        'canonical': canonical,
+                        'raw': raw,
+                    }),
                 )
                 row_count += 1
-            summary['sheets'].append({'name': sheet_name, 'rows': row_count, 'header_row': header_index + 1, 'score': score})
+            summary['sheets'].append({
+                'name': sheet_name,
+                'rows': row_count,
+                'header_row': header_index + 1,
+                'score': score,
+                'mapping': sheet_mapping,
+            })
             summary['rows'] += row_count
 
         uploaded.detected_headers = detected_headers
         uploaded.header_row = chosen_header_row
-        uploaded.column_mapping = mapping
-        missing = REQUIRED_FIELDS.get(uploaded.slot_type, set()) - set(mapping)
-        if missing:
+        uploaded.column_mapping = best_mapping
+        if valid_sheet_count == 0:
             uploaded.parse_status = UploadedFile.ParseStatus.NEEDS_MAPPING
-            uploaded.parse_error = '필수 열 매핑 필요: ' + ', '.join(sorted(missing))
+            skipped = summary.get('skipped_sheets') or []
+            detail = '; '.join(
+                f"{item.get('name')}: {item.get('reason')}" for item in skipped[:6]
+            )
+            uploaded.parse_error = (
+                '현재 원본에서 회원자료가 있는 시트를 찾지 못했습니다.'
+                + (f' ({detail})' if detail else '')
+            )
         else:
             uploaded.parse_status = UploadedFile.ParseStatus.PARSED
         uploaded.parse_summary = summary
@@ -233,6 +354,11 @@ def parse_uploaded_file(uploaded: UploadedFile):
 
 
 def _mapped_value(row: ParsedRow, uploaded: UploadedFile, field: str):
+    canonical = (row.raw_data or {}).get('__canonical__') or {}
+    if field in canonical:
+        return canonical.get(field)
+
+    # Backward compatibility for files parsed before v3.0.3.
     mapping = uploaded.column_mapping or {}
     mapped = mapping.get(field)
     if mapped is None:
@@ -250,9 +376,24 @@ def _sanitize_birth6(value):
     return text[:6] if len(text) >= 6 else ''
 
 
+def _normalize_person_name(value):
+    return re.sub(r'\s+', '', str(value or '')).strip()
+
+
 def _normalize_phone(value):
-    digits = ''.join(ch for ch in str(value or '') if ch.isdigit())
-    return digits
+    text = str(value or '')
+    # Prefer the first mobile number when a cell contains multiple numbers or notes.
+    for match in re.finditer(r'01[016789][0-9\-\s]{7,12}', text):
+        digits = ''.join(ch for ch in match.group(0) if ch.isdigit())
+        if len(digits) in {10, 11}:
+            return digits
+    # Fallback for old rows containing a single number without an 01x prefix.
+    chunks = re.findall(r'[0-9][0-9\-\s]{7,14}', text)
+    for chunk in chunks:
+        digits = ''.join(ch for ch in chunk if ch.isdigit())
+        if 9 <= len(digits) <= 11:
+            return digits
+    return ''
 
 
 def _active_member_candidates(name, birth6):
@@ -267,9 +408,21 @@ def process_license_file(uploaded: UploadedFile):
     job = uploaded.job
     created = updated = vehicle_changes = issues = reopened = 0
     for row in uploaded.parsed_rows.all():
-        name = str(_mapped_value(row, uploaded, 'name') or '').strip()
+        name = _normalize_person_name(_mapped_value(row, uploaded, 'name'))
         vehicle_no = str(_mapped_value(row, uploaded, 'vehicle_no') or '').strip()
+        vehicle_digits = ''.join(ch for ch in normalize_vehicle_no(vehicle_no) if ch.isdigit())
         if not name or not vehicle_no:
+            continue
+        if len(vehicle_digits) < 4:
+            ImportIssue.objects.create(
+                uploaded_file=uploaded,
+                sheet_name=row.sheet_name,
+                source_row=row.source_row,
+                issue_type='invalid_vehicle_number',
+                message='차량번호가 완전하지 않아 자동 등록하지 않았습니다.',
+                raw_data=row.raw_data,
+            )
+            issues += 1
             continue
         birth6 = _sanitize_birth6(_mapped_value(row, uploaded, 'birth6'))
         address = str(_mapped_value(row, uploaded, 'address') or '').strip()
@@ -621,47 +774,171 @@ def _account_type_from_value(value):
 
 @transaction.atomic
 def process_receivables_file(uploaded: UploadedFile):
-    """Import opening receivable balances when the file has a row-oriented mapping.
-
-    Complex legacy month-block sheets remain parsed and can be mapped/exported without
-    destructive assumptions. This importer intentionally requires name + balance.
-    """
-    created = issues = 0
+    """Import current balances, account labels, and receivables remarks."""
+    created = updated = prepayments = issues = 0
     job = uploaded.job
+
+    members = list(
+        Member.objects.filter(is_active_record=True)
+        .prefetch_related('vehicles')
+    )
+    by_exact_vehicle = defaultdict(list)
+    by_name_suffix = defaultdict(list)
+    by_name = defaultdict(list)
+    for member in members:
+        normalized_name = _normalize_person_name(member.name)
+        by_name[normalized_name].append(member)
+        for vehicle in member.vehicles.all():
+            normalized_vehicle = vehicle.normalized_vehicle_no or normalize_vehicle_no(vehicle.vehicle_no)
+            if not normalized_vehicle:
+                continue
+            by_exact_vehicle[normalized_vehicle].append(member)
+            digits = ''.join(ch for ch in normalized_vehicle if ch.isdigit())
+            if len(digits) >= 4:
+                by_name_suffix[(normalized_name, digits[-4:])].append(member)
+
+    def unique(items):
+        result = []
+        seen = set()
+        for item in items:
+            if item.id not in seen:
+                seen.add(item.id)
+                result.append(item)
+        return result
+
     for row in uploaded.parsed_rows.all():
-        name = str(_mapped_value(row, uploaded, 'name') or '').strip()
+        name = _normalize_person_name(_mapped_value(row, uploaded, 'name'))
         balance = parse_decimal(_mapped_value(row, uploaded, 'balance'))
-        if not name or balance is None or balance <= 0:
+        if not name or balance is None:
             continue
-        vehicle_no = normalize_vehicle_no(_mapped_value(row, uploaded, 'vehicle_no'))
-        candidates = Member.objects.filter(name=name, is_active_record=True)
-        if vehicle_no:
-            candidates = candidates.filter(vehicles__normalized_vehicle_no=vehicle_no).distinct()
-        if candidates.count() != 1:
+
+        vehicle_raw = _mapped_value(row, uploaded, 'vehicle_no')
+        vehicle_no = normalize_vehicle_no(vehicle_raw)
+        vehicle_digits = ''.join(ch for ch in vehicle_no if ch.isdigit())
+        suffix = vehicle_digits[-4:] if len(vehicle_digits) >= 4 else ''
+
+        candidates = unique(by_exact_vehicle.get(vehicle_no, [])) if vehicle_no else []
+        match_reason = '차량번호 정확히 일치'
+        if len(candidates) != 1 and suffix:
+            candidates = unique(by_name_suffix.get((name, suffix), []))
+            match_reason = '이름과 차량 끝번호 일치'
+        if len(candidates) != 1:
+            candidates = unique(by_name.get(name, []))
+            match_reason = '고유한 이름 일치'
+
+        if len(candidates) != 1:
             ImportIssue.objects.create(
                 uploaded_file=uploaded, sheet_name=row.sheet_name, source_row=row.source_row,
                 issue_type='opening_receivable_member_match',
                 message='기초 미수금 회원을 하나로 확정할 수 없습니다.',
-                candidate_member_ids=list(candidates.values_list('id', flat=True)), raw_data=row.raw_data,
+                candidate_member_ids=[member.id for member in candidates],
+                raw_data={
+                    **row.raw_data,
+                    '__match_attempt__': {
+                        'name': name,
+                        'vehicle': str(vehicle_raw or ''),
+                        'vehicle_suffix': suffix,
+                        'candidate_count': len(candidates),
+                    },
+                },
             )
             issues += 1
             continue
-        member = candidates.first()
+
+        member = candidates[0]
+        region = str(_mapped_value(row, uploaded, 'region') or '').strip()
+        memo = str(_mapped_value(row, uploaded, 'memo') or '').strip()
         account_type = _account_type_from_value(_mapped_value(row, uploaded, 'account_type'))
         if not account_type:
-            account_type = AccountType.MEMBERSHIP_FEE if member.membership_status == Member.MembershipStatus.ACTIVE else AccountType.MANAGEMENT_FEE
+            account_type = (
+                AccountType.MEMBERSHIP_FEE
+                if member.membership_status == Member.MembershipStatus.ACTIVE
+                else AccountType.MANAGEMENT_FEE
+            )
+
+        changed = False
+        if region and member.region != region:
+            member.region = region
+            changed = True
         if member.receivable_account_type != account_type:
             member.receivable_account_type = account_type
-            member.save(update_fields=['receivable_account_type', 'updated_at'])
-        charge_date = parse_date(_mapped_value(row, uploaded, 'charge_date'), default_year=job.year) or job.period_start
-        Charge.objects.get_or_create(
-            member=member, account_type=account_type, charge_date=charge_date,
+            changed = True
+        if memo:
+            existing_memo = member.memo or ''
+            if normalize_text(memo) not in normalize_text(existing_memo):
+                member.memo = '\n'.join(part for part in [existing_memo, memo] if part).strip()
+                changed = True
+        if changed:
+            member.save()
+
+        if balance < 0:
+            from core.services.ledger import replace_payment_allocations
+
+            opening_key = (
+                f'기초 선납금:{uploaded.id}:{row.sheet_name}:{row.source_row}'
+            )
+            payment = Payment.objects.filter(
+                source_type=Payment.SourceType.OPENING,
+                memo=opening_key,
+                is_effective=True,
+            ).first()
+            payment_date = timezone.make_aware(
+                datetime.combine(job.period_start, datetime.min.time()),
+                timezone.get_current_timezone(),
+            )
+            if payment is None:
+                payment = Payment.objects.create(
+                    source_type=Payment.SourceType.OPENING,
+                    payment_date=payment_date,
+                    amount=abs(balance),
+                    monthly_job=None,
+                    memo=opening_key,
+                )
+            else:
+                payment.payment_date = payment_date
+                payment.amount = abs(balance)
+                payment.save(update_fields=['payment_date', 'amount', 'updated_at'])
+            replace_payment_allocations(
+                payment,
+                [{
+                    'member': member,
+                    'account_type': account_type,
+                    'amount': abs(balance),
+                    'memo': '기존 미수금 파일의 음수잔액(선납금)',
+                }],
+                reason='기초 선납금 이관',
+                actor='admin',
+            )
+            prepayments += 1
+            continue
+        if balance == 0:
+            updated += 1
+            continue
+
+        charge_date = job.period_start
+        _, was_created = Charge.objects.update_or_create(
+            member=member,
+            account_type=account_type,
+            charge_date=charge_date,
             monthly_job=None,
-            defaults={'amount': balance, 'source_rule': 'opening_receivable'},
+            defaults={
+                'amount': balance,
+                'source_rule': f'opening_receivable:{match_reason}',
+            },
         )
-        created += 1
+        if was_created:
+            created += 1
+        else:
+            updated += 1
+
     uploaded.parse_status = UploadedFile.ParseStatus.PROCESSED
-    uploaded.parse_summary = {**(uploaded.parse_summary or {}), 'opening_charges': created, 'issues': issues}
+    uploaded.parse_summary = {
+        **(uploaded.parse_summary or {}),
+        'opening_charges': created,
+        'opening_charges_updated': updated,
+        'opening_prepayments': prepayments,
+        'issues': issues,
+    }
     uploaded.save(update_fields=['parse_status', 'parse_summary', 'updated_at'])
     log_action(action='process_receivables_file', instance=uploaded, after=uploaded.parse_summary)
     return uploaded.parse_summary

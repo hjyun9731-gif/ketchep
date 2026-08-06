@@ -194,3 +194,40 @@ class BalsongClientTests(TestCase):
             with patch('core.services.messaging.requests.post', return_value=response):
                 with self.assertRaises(BalsongAPIError):
                     BalsongClient().callback_list()
+
+
+class LegacyHeaderDetectionTests(TestCase):
+    def test_license_header_prefers_mobile_phone(self):
+        from core.models import UploadedFile
+        from core.services.imports import detect_header
+
+        rows = [[
+            '지역', '관리번호', '차량번호', '성    명', '주민등록번호',
+            '주               소', '전화번호', '핸 드 폰', '인가일자',
+            '가입일자', '자격증명\n발급일자', '비고',
+        ]]
+        score, header_index, mapping = detect_header(
+            rows, UploadedFile.SlotType.LICENSE,
+        )
+        self.assertEqual(header_index, 0)
+        self.assertEqual(mapping['vehicle_no'], 2)
+        self.assertEqual(mapping['name'], 3)
+        self.assertEqual(mapping['phone'], 7)
+        self.assertGreaterEqual(score, 8)
+
+    def test_receivables_header_uses_latest_populated_month(self):
+        from core.models import UploadedFile
+        from core.services.imports import detect_header
+
+        rows = [
+            [
+                '지역', '계정', '비고', '차량번호', '성 명',
+                '6월 미수금', '7월 미수금', '8월 미수금',
+            ],
+            ['강릉시', '관리비', '', '82배1001', '홍길동', 5000, 10000, None],
+            ['원주시', '협회비', '', '83바1002', '김영희', 0, 20000, None],
+        ]
+        _, _, mapping = detect_header(
+            rows, UploadedFile.SlotType.RECEIVABLES,
+        )
+        self.assertEqual(mapping['balance'], 6)
