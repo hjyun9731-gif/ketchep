@@ -29,8 +29,8 @@ from core.models import (
 )
 from core.services.audit import log_action
 from core.services.billing import (
-    close_member, generate_charges_for_job, join_association, leave_association,
-    reopen_member,
+    close_member, generate_charges_for_job, generate_due_charges_through_today,
+    join_association, leave_association, reopen_member,
 )
 from core.services.exports import (
     build_bank_ledger_workbook, build_receivables_workbook, build_voucher_workbook, build_workbook,
@@ -120,7 +120,14 @@ def _save_and_process_excel(*, job, slot_type, file_obj):
         parse_status=UploadedFile.ParseStatus.PROCESSED,
     ).first()
     if existing:
-        return existing, {'already_processed': 1}
+        # A parser update must be able to repair data from the same original
+        # workbook. Rebuild ParsedRow canonical values and apply them again.
+        parse_uploaded_file(existing)
+        if existing.parse_status == UploadedFile.ParseStatus.NEEDS_MAPPING:
+            raise ValueError(existing.parse_error or '기존 파일의 열을 다시 찾지 못했습니다.')
+        result = process_uploaded_file(existing)
+        result = {**result, 'refreshed_existing_file': 1}
+        return existing, result
     uploaded = UploadedFile.objects.create(
         job=job,
         slot_type=slot_type,
@@ -142,8 +149,9 @@ def _save_and_process_excel(*, job, slot_type, file_obj):
 def dashboard(request):
     today = timezone.localdate()
     job = get_or_create_current_job(today)
-    # Due-date charges are generated automatically. Future individual billing dates are not posted early.
-    generate_charges_for_job(job, actor=_actor(request))
+    # Post only newly due individual charges once per day. The old full-member
+    # recalculation on every dashboard request caused thousands of queries.
+    generate_due_charges_through_today(job, actor=_actor(request))
     active_members = Member.objects.filter(
         is_active_record=True,
         operational_status=Member.OperationalStatus.ACTIVE,
@@ -159,10 +167,23 @@ def dashboard(request):
     ]
     current_transactions = BankTransaction.objects.filter(job=job, is_effective=True)
     today_transactions = current_transactions.filter(transaction_at__date=today)
+    charge_total = Charge.objects.filter(
+        member__in=active_members,
+        status=Charge.Status.POSTED,
+    ).filter(
+        Q(monthly_job__isnull=True) | Q(monthly_job__is_current=True)
+    ).aggregate(v=Sum('amount'))['v'] or Decimal('0')
+    settlement_total = ChargeSettlement.objects.filter(
+        charge__member__in=active_members,
+        charge__status=Charge.Status.POSTED,
+        is_active=True,
+    ).filter(
+        Q(charge__monthly_job__isnull=True) | Q(charge__monthly_job__is_current=True)
+    ).aggregate(v=Sum('amount'))['v'] or Decimal('0')
     summary = {
         'members': active_members.count(),
         'closed_members': closed_members.count(),
-        'outstanding': sum((m.total_outstanding for m in active_members), Decimal('0')),
+        'outstanding': charge_total - settlement_total,
         'today_amount': today_transactions.aggregate(v=Sum('amount'))['v'] or Decimal('0'),
         'today_count': today_transactions.count(),
         'review_transactions': current_transactions.filter(status__in=review_statuses).count(),
@@ -693,7 +714,7 @@ def member_edit(request, pk):
         log_action(action='member_updated', instance=member, before=before, actor=_actor(request))
         messages.success(request, '회원정보를 수정했습니다.')
         return redirect('core:member_detail', pk=member.pk)
-    return render(request, 'core/form.html', {'form': form, 'title': f'{member.name} 회원정보 수정'})
+    return render(request, 'core/member_form.html', {'form': form, 'member': member, 'title': f'{member.name} 회원정보 수정'})
 
 
 @login_required

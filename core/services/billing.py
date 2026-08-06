@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import calendar
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.db import transaction
@@ -10,7 +10,7 @@ from django.utils import timezone
 
 from core.models import (
     AccountType, Charge, ClosureEvent, Member, MembershipEvent, MonthlyJob,
-    Prepayment, Refund, Vehicle,
+    Prepayment, Refund, SystemSetting, Vehicle,
 )
 from core.services.audit import log_action
 from core.services.ledger import RECURRING_ACCOUNTS, rebuild_member_account
@@ -20,6 +20,32 @@ from core.utils import add_month_same_day
 MEMBERSHIP_FULL = Decimal('10000')
 MEMBERSHIP_REDUCED = Decimal('5000')
 MANAGEMENT_AMOUNT = Decimal('5000')
+
+
+def _prefetched(member: Member, relation_name: str):
+    cache = getattr(member, '_prefetched_objects_cache', {})
+    return cache.get(relation_name)
+
+
+def _vehicle_candidates(member: Member):
+    cached = _prefetched(member, 'vehicles')
+    if cached is not None:
+        return list(cached)
+    return list(member.vehicles.all())
+
+
+def _membership_events(member: Member):
+    cached = _prefetched(member, 'membership_events')
+    if cached is not None:
+        return list(cached)
+    return list(member.membership_events.all())
+
+
+def _closure_events(member: Member):
+    cached = _prefetched(member, 'closure_events')
+    if cached is not None:
+        return list(cached)
+    return list(member.closure_events.all())
 
 
 def date_with_day(year: int, month: int, day: int) -> date:
@@ -51,15 +77,24 @@ def membership_fee_amount(member: Member, charge_year: int) -> Decimal:
 
 
 def vehicle_for_date(member: Member, target: date) -> Vehicle | None:
-    qs = member.vehicles.filter(Q(start_date__isnull=True) | Q(start_date__lte=target)).filter(
-        Q(end_date__isnull=True) | Q(end_date__gte=target)
-    ).order_by('-is_current', '-start_date', '-id')
-    return qs.first() or member.current_vehicle
+    vehicles = [
+        vehicle for vehicle in _vehicle_candidates(member)
+        if (vehicle.start_date is None or vehicle.start_date <= target)
+        and (vehicle.end_date is None or vehicle.end_date >= target)
+    ]
+    vehicles.sort(key=lambda item: (bool(item.is_current), item.start_date or date.min, item.id or 0), reverse=True)
+    if vehicles:
+        return vehicles[0]
+    current = [vehicle for vehicle in _vehicle_candidates(member) if vehicle.is_current]
+    current.sort(key=lambda item: (item.start_date or date.min, item.id or 0), reverse=True)
+    return current[0] if current else None
 
 
 def latest_membership_state(member: Member, target: date) -> str:
-    event = member.membership_events.filter(effective_date__lte=target).order_by('-effective_date', '-id').first()
-    if event:
+    events = [event for event in _membership_events(member) if event.effective_date <= target]
+    events.sort(key=lambda item: (item.effective_date, item.id or 0), reverse=True)
+    if events:
+        event = events[0]
         if event.event_type == MembershipEvent.EventType.JOIN:
             return Member.MembershipStatus.ACTIVE
         if event.event_type == MembershipEvent.EventType.PENDING:
@@ -72,23 +107,27 @@ def latest_membership_state(member: Member, target: date) -> str:
 
 
 def month_has_closure_transition(member: Member, year: int, month: int) -> bool:
-    return member.closure_events.filter(effective_date__year=year, effective_date__month=month).exists()
+    return any(
+        event.effective_date.year == year and event.effective_date.month == month
+        for event in _closure_events(member)
+    )
 
 
 def is_closed_on(member: Member, target: date) -> bool:
-    event = member.closure_events.filter(effective_date__lte=target).order_by('-effective_date', '-id').first()
-    if event:
-        return event.event_type == ClosureEvent.EventType.CLOSE
+    events = [event for event in _closure_events(member) if event.effective_date <= target]
+    events.sort(key=lambda item: (item.effective_date, item.id or 0), reverse=True)
+    if events:
+        return events[0].event_type == ClosureEvent.EventType.CLOSE
     return bool(member.closed_on and member.closed_on <= target and not (member.re_registered_on and member.re_registered_on <= target))
-
 
 def membership_charge_date(member: Member, year: int, month: int) -> date | None:
     # A leave event in the month cancels the whole month's association fee.
-    if member.membership_events.filter(
-        event_type=MembershipEvent.EventType.LEAVE,
-        effective_date__year=year,
-        effective_date__month=month,
-    ).exists():
+    if any(
+        event.event_type == MembershipEvent.EventType.LEAVE
+        and event.effective_date.year == year
+        and event.effective_date.month == month
+        for event in _membership_events(member)
+    ):
         return None
 
     if member.membership_started_on:
@@ -192,6 +231,125 @@ def desired_recurring_charge(member: Member, year: int, month: int):
             'source_rule': 'management_monthly_2027' if year >= 2027 else 'management_delivery',
         }
     return None
+
+
+@transaction.atomic
+def generate_due_charges_through_today(job: MonthlyJob, *, actor='system') -> dict:
+    """Post only charges whose individual due date has arrived.
+
+    The former dashboard called the full monthly reconciliation for every page
+    load. That scanned every member and issued many relation queries. This
+    function runs at most once per day and only checks members whose anchor day
+    can actually be due between the previous run and today.
+    """
+    today = timezone.localdate()
+    if (job.year, job.month) != (today.year, today.month):
+        return {'skipped': 'not_current_month'}
+
+    setting, _ = SystemSetting.objects.select_for_update().get_or_create(
+        key=f'daily_charge_generation:{job.id}',
+        defaults={'value': {}, 'description': '개별 부과일 자동처리 마지막 실행일'},
+    )
+    last_raw = (setting.value or {}).get('last_run')
+    try:
+        last_run = date.fromisoformat(last_raw) if last_raw else None
+    except ValueError:
+        last_run = None
+    if last_run and last_run >= today:
+        return {'skipped': 'already_run_today'}
+
+    start = max(job.period_start, (last_run + timedelta(days=1)) if last_run else job.period_start)
+    if start > today:
+        setting.value = {'last_run': today.isoformat()}
+        setting.save(update_fields=['value', 'updated_at'])
+        return {'created': 0, 'updated': 0, 'checked': 0}
+
+    days = set()
+    cursor = start
+    while cursor <= today:
+        days.add(cursor.day)
+        if cursor.day == calendar.monthrange(cursor.year, cursor.month)[1]:
+            days.update(range(cursor.day + 1, 32))
+        cursor += timedelta(days=1)
+
+    candidate_filter = (
+        Q(membership_started_on__day__in=days)
+        | Q(membership_billing_anchor__day__in=days)
+        | Q(certificate_issued_on__day__in=days)
+        | Q(management_billing_anchor__day__in=days)
+        | Q(re_registered_on__day__in=days)
+    )
+    candidates = list(
+        Member.objects.filter(is_active_record=True)
+        .filter(candidate_filter)
+        .prefetch_related('vehicles', 'membership_events', 'closure_events')
+    )
+
+    existing = {
+        (charge.member_id, charge.account_type, charge.charge_date): charge
+        for charge in Charge.objects.filter(
+            monthly_job=job,
+            member_id__in=[member.id for member in candidates],
+            charge_date__gte=start,
+            charge_date__lte=today,
+        )
+    }
+    to_create = []
+    to_update = []
+    affected = set()
+    checked = 0
+    for member in candidates:
+        desired = desired_recurring_charge(member, job.year, job.month)
+        if not desired or not (start <= desired['charge_date'] <= today):
+            continue
+        checked += 1
+        key = (member.id, desired['account_type'], desired['charge_date'])
+        charge = existing.get(key)
+        if charge is None:
+            to_create.append(Charge(member=member, monthly_job=job, **desired))
+            affected.add((member.id, desired['account_type']))
+            continue
+        changed = False
+        if charge.amount != desired['amount']:
+            charge.amount = desired['amount']
+            changed = True
+        if charge.status != Charge.Status.POSTED:
+            charge.status = Charge.Status.POSTED
+            charge.cancellation_reason = ''
+            charge.cancelled_at = None
+            changed = True
+        if charge.source_rule != desired['source_rule']:
+            charge.source_rule = desired['source_rule']
+            changed = True
+        if changed:
+            charge.updated_at = timezone.now()
+            to_update.append(charge)
+            affected.add((member.id, desired['account_type']))
+
+    if to_create:
+        Charge.objects.bulk_create(to_create, batch_size=500, ignore_conflicts=True)
+    if to_update:
+        Charge.objects.bulk_update(
+            to_update,
+            ['amount', 'status', 'cancellation_reason', 'cancelled_at', 'source_rule', 'updated_at'],
+            batch_size=500,
+        )
+    if job.is_current:
+        members_by_id = {member.id: member for member in candidates}
+        for member_id, account_type in affected:
+            member = members_by_id.get(member_id) or Member.objects.get(pk=member_id)
+            rebuild_member_account(member, account_type)
+
+    setting.value = {'last_run': today.isoformat()}
+    setting.save(update_fields=['value', 'updated_at'])
+    result = {
+        'created': len(to_create),
+        'updated': len(to_update),
+        'checked': checked,
+        'candidate_count': len(candidates),
+    }
+    log_action(action='generate_due_charges_daily', instance=job, after=result, actor=actor)
+    return result
 
 
 @transaction.atomic

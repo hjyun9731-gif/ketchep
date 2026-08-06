@@ -1,0 +1,73 @@
+{% extends 'core/base.html' %}
+{% block title %}{{ title }}{% endblock %}
+{% block body_class %}member-edit-page{% endblock %}
+{% block content %}
+<div class="member-edit-shell">
+  <div class="page-head member-edit-head">
+    <div class="page-title">
+      <a class="back-link" href="{% url 'core:member_detail' member.pk %}">← 회원 상세</a>
+      <h1>{{ title }}</h1>
+      <p>{{ member.current_vehicle.vehicle_no|default:'차량번호 없음' }} · 현재 자료를 한 화면에서 수정합니다.</p>
+    </div>
+  </div>
+
+  <form method="post" class="member-edit-form">{% csrf_token %}
+    {% if form.non_field_errors %}<div class="alert error">{{ form.non_field_errors }}</div>{% endif %}
+
+    <section class="card member-form-section">
+      <div class="section-heading"><div><h2>기본정보</h2><p>회원 검색과 연락에 사용하는 핵심 정보입니다.</p></div></div>
+      <div class="member-form-grid cols-3">
+        <div class="field">{{ form.management_no.label_tag }}{{ form.management_no }}{{ form.management_no.errors }}</div>
+        <div class="field">{{ form.region.label_tag }}{{ form.region }}{{ form.region.errors }}</div>
+        <div class="field">{{ form.vehicle_no.label_tag }}{{ form.vehicle_no }}{{ form.vehicle_no.errors }}</div>
+        <div class="field">{{ form.name.label_tag }}{{ form.name }}{{ form.name.errors }}</div>
+        <div class="field">{{ form.birth6.label_tag }}{{ form.birth6 }}{{ form.birth6.errors }}</div>
+        <div class="field">{{ form.phone.label_tag }}{{ form.phone }}{{ form.phone.errors }}</div>
+      </div>
+    </section>
+
+    <section class="card member-form-section">
+      <div class="section-heading"><div><h2>가입·자격증명</h2><p>원본 전체면허자현황의 가입일자와 자격증명 발급일자를 그대로 관리합니다.</p></div></div>
+      <div class="member-form-grid cols-3">
+        <div class="field">{{ form.membership_status.label_tag }}{{ form.membership_status }}{{ form.membership_status.errors }}</div>
+        <div class="field">{{ form.receivable_account_type.label_tag }}{{ form.receivable_account_type }}{{ form.receivable_account_type.errors }}</div>
+        <div class="field">{{ form.operational_status.label_tag }}{{ form.operational_status }}{{ form.operational_status.errors }}</div>
+        <div class="field date-emphasis">{{ form.membership_started_on.label_tag }}{{ form.membership_started_on }}{{ form.membership_started_on.errors }}</div>
+        <div class="field date-emphasis">{{ form.certificate_issued_on.label_tag }}{{ form.certificate_issued_on }}{{ form.certificate_issued_on.errors }}</div>
+        <div class="field">{{ form.membership_ended_on.label_tag }}{{ form.membership_ended_on }}{{ form.membership_ended_on.errors }}</div>
+      </div>
+    </section>
+
+    <section class="card member-form-section">
+      <div class="section-heading"><div><h2>주소·비고</h2><p>공문 주소가 기본 주소와 다를 때만 별도로 관리합니다.</p></div></div>
+      <div class="member-form-grid cols-2">
+        <div class="field">{{ form.address.label_tag }}{{ form.address }}{{ form.address.errors }}</div>
+        <div class="field">{{ form.official_address.label_tag }}{{ form.official_address }}{{ form.official_address.errors }}</div>
+        <div class="field span-2 checkbox-field"><label>{{ form.official_address_custom }} <span>공문 주소를 별도로 유지</span></label>{{ form.official_address_custom.errors }}</div>
+        <div class="field span-2">{{ form.memo.label_tag }}{{ form.memo }}{{ form.memo.errors }}</div>
+      </div>
+    </section>
+
+    <details class="card member-form-section advanced-section">
+      <summary>부과기준·확인상태 등 고급항목</summary>
+      <div class="member-form-grid cols-3 advanced-grid">
+        <div class="field">{{ form.membership_billing_anchor.label_tag }}{{ form.membership_billing_anchor }}{{ form.membership_billing_anchor.errors }}</div>
+        <div class="field">{{ form.management_billing_anchor.label_tag }}{{ form.management_billing_anchor }}{{ form.management_billing_anchor.errors }}</div>
+        <div class="field">{{ form.first_seen_on.label_tag }}{{ form.first_seen_on }}{{ form.first_seen_on.errors }}</div>
+        <div class="field">{{ form.certificate_date_recorded_on.label_tag }}{{ form.certificate_date_recorded_on }}{{ form.certificate_date_recorded_on.errors }}</div>
+        <div class="field">{{ form.collection_status.label_tag }}{{ form.collection_status }}{{ form.collection_status.errors }}</div>
+        <div class="field check-stack">
+          <label>{{ form.address_needs_check }} <span>주소 확인 필요</span></label>
+          <label>{{ form.phone_needs_check }} <span>연락처 확인 필요</span></label>
+          <label>{{ form.sms_opt_out }} <span>문자 수신거부</span></label>
+        </div>
+      </div>
+    </details>
+
+    <div class="member-form-actions">
+      <a class="button" href="{% url 'core:member_detail' member.pk %}">취소</a>
+      <button class="button primary" type="submit">저장</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

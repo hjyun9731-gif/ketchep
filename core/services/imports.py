@@ -32,6 +32,7 @@ HEADER_ALIASES = {
         'region': ['지역', '시군', '시군구', '관할'],
         'management_no': ['관리번호', '관리 번호', '회원관리번호'],
         'join_date': ['협회가입일자', '협회가입일', '가입일자', '가입일', '협회가입'],
+        'membership_status': ['가입여부', '협회가입여부', '회원여부', '가입상태'],
         'vehicle_no': ['차량번호', '자동차등록번호', '등록번호', '차번'],
         'certificate_date': ['자격증명발급일자', '자격증명발급일', '발급일자', '발급일'],
     },
@@ -461,6 +462,7 @@ def process_license_file(uploaded: UploadedFile):
         region = str(_mapped_value(row, uploaded, 'region') or '').strip()
         management_no = str(_mapped_value(row, uploaded, 'management_no') or '').strip()
         join_raw = _mapped_value(row, uploaded, 'join_date')
+        membership_raw = _mapped_value(row, uploaded, 'membership_status')
         join_date = parse_date(join_raw, default_year=job.year)
         cert_date = parse_date(_mapped_value(row, uploaded, 'certificate_date'), default_year=job.year)
 
@@ -517,8 +519,12 @@ def process_license_file(uploaded: UploadedFile):
         memo_key = normalize_text(memo)
         member.phone_needs_check = '결번' in memo_key
         member.sms_opt_out = '수신거부' in memo_key
-        member.membership_mark_raw = str(join_raw or '')
-        joined = bool(join_date or normalize_text(join_raw) in {'o', '0', '○', '가입', 'y', 'yes'})
+        member.membership_mark_raw = str(membership_raw or join_raw or '')
+        membership_key = normalize_text(membership_raw)
+        joined = (
+            membership_key in {'가입', '협회가입', '회원', 'o', '0', '○', 'y', 'yes'}
+            or (not membership_key and bool(join_date or normalize_text(join_raw) in {'o', '0', '○', '가입', 'y', 'yes'}))
+        )
         # 화면에서 처리한 가입·탈퇴 이력이 있으면 업로드 파일이 그 상태를 덮어쓰지 않는다.
         if not has_system_membership_history:
             if joined:

@@ -310,3 +310,29 @@ code{white-space:pre-wrap;word-break:break-all;color:#4d5560;font-size:11px}
 .dense-pagination{display:flex;align-items:center;justify-content:center;gap:6px;padding:9px;border-top:1px solid var(--line);background:#fafbfc;font-size:10px}.dense-pagination a,.dense-pagination span{display:inline-flex;align-items:center;justify-content:center;min-height:26px;padding:0 9px;border:1px solid var(--line);border-radius:5px;background:#fff;color:#58616c}.dense-pagination span{border-color:transparent;background:transparent}
 @media(max-width:900px){.wide-data-page .header-inner,.wide-data-page .app-main{width:min(100% - 14px,1760px)}.member-list-heading{align-items:flex-start;flex-direction:column}.member-search-bar{grid-template-columns:1fr 1fr}.member-search-bar input{grid-column:1/-1}}
 
+
+/* v3.0.7 member edit: compact office form, not a kilometre-long single column */
+.member-edit-page .app-header{position:static}
+.member-edit-shell{max-width:1180px;margin:0 auto}
+.member-edit-head{margin-bottom:16px}
+.member-edit-form{display:grid;gap:14px}
+.member-form-section{padding:0;overflow:hidden}
+.section-heading{display:flex;align-items:center;justify-content:space-between;padding:15px 18px;border-bottom:1px solid var(--line);background:#fafbfc}
+.section-heading h2{margin:0;font-size:16px}.section-heading p{margin:3px 0 0;color:var(--muted);font-size:11px}
+.member-form-grid{display:grid;gap:14px 16px;padding:18px}
+.member-form-grid.cols-3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.member-form-grid.cols-2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.member-form-grid .span-2{grid-column:1/-1}
+.member-form-grid .field label{display:block;margin-bottom:6px;color:var(--text-soft);font-size:12px;font-weight:800}
+.member-form-grid textarea{min-height:78px}
+.member-form-grid .date-emphasis{padding:11px;border:1px solid #c9d7fb;border-radius:10px;background:#f5f8ff}
+.checkbox-field label,.check-stack label{display:flex!important;align-items:center;gap:8px;margin:0!important;font-size:13px!important}
+.check-stack{display:flex;flex-direction:column;justify-content:center;gap:12px;padding:9px 0}
+.advanced-section>summary{list-style:none;padding:15px 18px;font-weight:800;cursor:pointer;background:#fff}
+.advanced-section>summary::-webkit-details-marker{display:none}
+.advanced-section>summary:after{content:'펼치기';float:right;color:var(--muted);font-size:11px;font-weight:700}
+.advanced-section[open]>summary{border-bottom:1px solid var(--line)}
+.advanced-section[open]>summary:after{content:'접기'}
+.member-form-actions{display:flex;justify-content:flex-end;gap:8px;padding:4px 0 10px}
+@media(max-width:900px){.member-form-grid.cols-3{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:640px){.member-form-grid.cols-3,.member-form-grid.cols-2{grid-template-columns:1fr}.member-form-grid .span-2{grid-column:auto}}
