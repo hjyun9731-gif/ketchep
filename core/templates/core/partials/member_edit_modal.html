@@ -1,0 +1,36 @@
+<div class="work-modal-card work-modal-wide">
+  <div class="work-modal-head">
+    <div><span class="modal-kicker">회원정보</span><h2>{{ member.name }} 수정</h2><p>{{ member.current_vehicle.vehicle_no|default:'차량번호 없음' }}</p></div>
+    <button type="button" class="modal-close" data-modal-close aria-label="닫기">×</button>
+  </div>
+  <form method="post" action="{% url 'core:member_edit' member.pk %}" data-modal-form>{% csrf_token %}<input type="hidden" name="modal" value="1">
+    <div class="work-modal-body">
+      {% if form.non_field_errors %}<div class="alert error">{{ form.non_field_errors }}</div>{% endif %}
+      <div class="modal-section-title">기본정보</div>
+      <div class="modal-form-grid cols-3">
+        <div class="field">{{ form.management_no.label_tag }}{{ form.management_no }}{{ form.management_no.errors }}</div>
+        <div class="field">{{ form.region.label_tag }}{{ form.region }}{{ form.region.errors }}</div>
+        <div class="field">{{ form.vehicle_no.label_tag }}{{ form.vehicle_no }}{{ form.vehicle_no.errors }}</div>
+        <div class="field">{{ form.name.label_tag }}{{ form.name }}{{ form.name.errors }}</div>
+        <div class="field">{{ form.birth6.label_tag }}{{ form.birth6 }}{{ form.birth6.errors }}</div>
+        <div class="field">{{ form.phone.label_tag }}{{ form.phone }}{{ form.phone.errors }}</div>
+      </div>
+      <div class="modal-section-title">가입·자격증명</div>
+      <div class="modal-form-grid cols-3">
+        <div class="field">{{ form.membership_status.label_tag }}{{ form.membership_status }}{{ form.membership_status.errors }}</div>
+        <div class="field">{{ form.receivable_account_type.label_tag }}{{ form.receivable_account_type }}{{ form.receivable_account_type.errors }}</div>
+        <div class="field">{{ form.membership_started_on.label_tag }}{{ form.membership_started_on }}{{ form.membership_started_on.errors }}</div>
+        <div class="field">{{ form.certificate_issued_on.label_tag }}{{ form.certificate_issued_on }}{{ form.certificate_issued_on.errors }}</div>
+        <div class="field">{{ form.membership_ended_on.label_tag }}{{ form.membership_ended_on }}{{ form.membership_ended_on.errors }}</div>
+      </div>
+      <div class="modal-section-title">주소·비고</div>
+      <div class="modal-form-grid cols-2">
+        <div class="field">{{ form.address.label_tag }}{{ form.address }}{{ form.address.errors }}</div>
+        <div class="field">{{ form.official_address.label_tag }}{{ form.official_address }}{{ form.official_address.errors }}</div>
+        <div class="field span-all checkbox-field"><label>{{ form.official_address_custom }} <span>공문 주소를 별도로 유지</span></label>{{ form.official_address_custom.errors }}</div>
+        <div class="field span-all">{{ form.memo.label_tag }}{{ form.memo }}{{ form.memo.errors }}</div>
+      </div>
+    </div>
+    <div class="work-modal-foot"><button type="button" class="button" data-modal-close>취소</button><button type="submit" class="button primary">저장</button></div>
+  </form>
+</div>

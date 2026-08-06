@@ -82,6 +82,10 @@ def parse_date(value: Any, *, default_year: int | None = None) -> date | None:
     text = text.replace('년', '-').replace('월', '-').replace('일', '')
     text = re.sub(r'[./]', '-', text)
     text = re.sub(r'\s+', '', text)
+    # Legacy sheets commonly store dates as ``18.10.24.`` or ``13. 6. 3.``.
+    # Converting dots to hyphens leaves a trailing separator, so trim and
+    # collapse separators before parsing.
+    text = re.sub(r'-+', '-', text).strip('-')
     for fmt in ('%Y-%m-%d', '%y-%m-%d', '%Y-%m', '%y-%m', '%Y%m%d', '%y%m%d'):
         try:
             parsed = datetime.strptime(text, fmt).date()

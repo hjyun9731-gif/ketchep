@@ -324,6 +324,30 @@ def build_bank_ledger_workbook(job: MonthlyJob) -> BytesIO:
                 line.get_account_type_display(), line.amount,
             ])
             first = False
+
+    manual_payments = Payment.objects.filter(
+        monthly_job=job, source_type=Payment.SourceType.MANUAL,
+        is_effective=True,
+    ).exclude(status=Payment.Status.CANCELLED).order_by('payment_date', 'id')
+    for payment in manual_payments:
+        lines = list(payment.allocation_lines.filter(
+            status=PaymentAllocationLine.Status.ACTIVE
+        ).select_related('member'))
+        if not lines:
+            continue
+        first = True
+        for line in lines:
+            vehicle = line.member.current_vehicle
+            ws.append([
+                payment.payment_date if first else '', '수기입력' if first else '',
+                payment.memo if first else '', payment.amount if first else '',
+                payment.get_status_display() if first else '', '회원명단 수기입금' if first else '',
+                '수기입력' if first else '', '', f'M-{payment.id}',
+                payment.unallocated_amount if first else '',
+                line.member.region, vehicle.vehicle_no if vehicle else '', line.member.name,
+                line.get_account_type_display(), line.amount,
+            ])
+            first = False
     _style_header(ws)
     for col in ('D', 'J', 'O'):
         for cell in ws[col][1:]:
@@ -472,6 +496,26 @@ def build_voucher_workbook(job: MonthlyJob) -> BytesIO:
             ws.append([
                 voucher_no, payment_date, tx.bank_account_label, tx.payer_text, '', '', '',
                 '보통예금', '가수금', tx.amount - allocated_total, '미배정 잔액', '확인 필요', tx.id,
+            ])
+
+    manual_payments = Payment.objects.filter(
+        monthly_job=job, source_type=Payment.SourceType.MANUAL,
+        is_effective=True,
+    ).exclude(status=Payment.Status.CANCELLED).order_by('payment_date', 'id')
+    for payment in manual_payments:
+        payment_date = payment.payment_date.date()
+        daily_seq[payment_date] += 1
+        voucher_no = f'{payment_date:%Y%m%d}-{daily_seq[payment_date]:03d}'
+        for line in payment.allocation_lines.filter(
+            status=PaymentAllocationLine.Status.ACTIVE
+        ).select_related('member'):
+            vehicle = line.member.current_vehicle
+            ws.append([
+                voucher_no, payment_date, '수기입력', payment.memo, line.member.region,
+                vehicle.vehicle_no if vehicle else '', line.member.name, '보통예금',
+                line.get_account_type_display(), line.amount,
+                f'{vehicle.vehicle_no if vehicle else ""} {line.member.name} {line.get_account_type_display()}'.strip(),
+                payment.get_status_display(), f'M-{payment.id}',
             ])
     _style_header(ws)
     for cell in ws['J'][1:]:

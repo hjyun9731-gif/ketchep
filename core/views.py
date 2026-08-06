@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, time
 from decimal import Decimal
 from io import BytesIO
 import zipfile
@@ -8,9 +9,9 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db import transaction
 from django.core.paginator import Paginator
-from django.db.models import DecimalField, ExpressionWrapper, F, OuterRef, Q, Subquery, Sum, Value
+from django.db.models import Count, DecimalField, ExpressionWrapper, F, OuterRef, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
-from django.http import FileResponse, Http404, HttpResponse
+from django.http import FileResponse, Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -18,7 +19,7 @@ from django.utils import timezone
 from core.forms import (
     AllocationFormSet, ArrearsComposeForm, BankPasteForm, CloseMemberForm, ColumnMappingForm,
     InitialDataImportForm,
-    JoinAssociationForm, LeaveAssociationForm, LegalNoticeForm, MemberForm, QuickMemberForm,
+    JoinAssociationForm, LeaveAssociationForm, LegalNoticeForm, ManualPaymentForm, MemberForm, QuickMemberForm,
     MessageScheduleEditForm, MonthlyJobForm, RefundForm, RefundMessageForm, RefundPendingForm,
     ReopenMemberForm, SimpleExcelUploadForm, TransferMemberForm, UploadForm,
 )
@@ -107,6 +108,66 @@ def _member_queryset_with_financials(queryset):
             )
         )
     )
+
+
+def _attach_member_page_data(page_obj):
+    """Load vehicle and balance data only for the current page.
+
+    The old list annotated and sorted all 3,000+ members with correlated
+    subqueries before pagination.  That made even page 1 wait for the whole
+    ledger.  This keeps pagination on indexed Member columns, then performs
+    three compact aggregate queries for the 50 visible rows.
+    """
+    members = list(page_obj.object_list)
+    member_ids = [member.id for member in members]
+    if not member_ids:
+        page_obj.object_list = members
+        return page_obj
+
+    vehicle_map = {
+        row['member_id']: row['vehicle_no']
+        for row in Vehicle.objects.filter(member_id__in=member_ids, is_current=True)
+        .values('member_id', 'vehicle_no')
+    }
+    charge_map = {
+        row['member_id']: row['total'] or Decimal('0')
+        for row in Charge.objects.filter(
+            member_id__in=member_ids, status=Charge.Status.POSTED,
+        ).filter(
+            Q(monthly_job__isnull=True) | Q(monthly_job__is_current=True)
+        ).values('member_id').annotate(total=Sum('amount'))
+    }
+    settlement_map = {
+        row['charge__member_id']: row['total'] or Decimal('0')
+        for row in ChargeSettlement.objects.filter(
+            charge__member_id__in=member_ids, charge__status=Charge.Status.POSTED, is_active=True,
+        ).filter(
+            Q(charge__monthly_job__isnull=True) | Q(charge__monthly_job__is_current=True)
+        ).values('charge__member_id').annotate(total=Sum('amount'))
+    }
+    for member in members:
+        member.current_vehicle_no = vehicle_map.get(member.id, '')
+        member.outstanding_amount = max(
+            Decimal('0'),
+            charge_map.get(member.id, Decimal('0')) - settlement_map.get(member.id, Decimal('0')),
+        )
+    page_obj.object_list = members
+    return page_obj
+
+
+def _member_status_counts():
+    return Member.objects.filter(is_active_record=True).aggregate(
+        active=Count('id', filter=Q(operational_status=Member.OperationalStatus.ACTIVE)),
+        closed=Count('id', filter=Q(operational_status=Member.OperationalStatus.CLOSED)),
+    )
+
+
+def _wants_modal(request):
+    return request.GET.get('modal') == '1' or request.POST.get('modal') == '1' or request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+
+
+def _modal_form_response(request, template_name, context, *, status=200):
+    return render(request, template_name, context, status=status)
 
 
 def _actor(request):
@@ -537,8 +598,11 @@ def member_list(request):
                 query |= Q(vehicles__normalized_vehicle_no__icontains=vehicle_q)
             members_qs = members_qs.filter(query).distinct()
 
-    members_qs = _member_queryset_with_financials(members_qs).order_by('region', 'current_vehicle_no', 'name', 'id')
-    page_obj = Paginator(members_qs, page_size).get_page(request.GET.get('page'))
+    members_qs = members_qs.order_by('region', 'management_no', 'name', 'id')
+    page_obj = _attach_member_page_data(
+        Paginator(members_qs, page_size).get_page(request.GET.get('page'))
+    )
+    counts = _member_status_counts()
     return render(request, 'core/member_list.html', {
         'page_obj': page_obj,
         'q': q,
@@ -548,8 +612,8 @@ def member_list(request):
         'page_size': page_size,
         'closed_mode': False,
         'regions': Member.objects.filter(is_active_record=True).exclude(region='').values_list('region', flat=True).distinct().order_by('region'),
-        'active_count': Member.objects.filter(is_active_record=True, operational_status=Member.OperationalStatus.ACTIVE).count(),
-        'closed_count': Member.objects.filter(is_active_record=True, operational_status=Member.OperationalStatus.CLOSED).count(),
+        'active_count': counts['active'] or 0,
+        'closed_count': counts['closed'] or 0,
     })
 
 
@@ -594,8 +658,11 @@ def closed_member_list(request):
                 query |= Q(vehicles__normalized_vehicle_no__icontains=vehicle_q)
             members_qs = members_qs.filter(query).distinct()
 
-    members_qs = _member_queryset_with_financials(members_qs).order_by('-closed_on', 'region', 'current_vehicle_no', 'name', 'id')
-    page_obj = Paginator(members_qs, page_size).get_page(request.GET.get('page'))
+    members_qs = members_qs.order_by('-closed_on', 'region', 'management_no', 'name', 'id')
+    page_obj = _attach_member_page_data(
+        Paginator(members_qs, page_size).get_page(request.GET.get('page'))
+    )
+    counts = _member_status_counts()
     return render(request, 'core/member_list.html', {
         'page_obj': page_obj,
         'q': q,
@@ -605,8 +672,8 @@ def closed_member_list(request):
         'page_size': page_size,
         'closed_mode': True,
         'regions': Member.objects.filter(is_active_record=True).exclude(region='').values_list('region', flat=True).distinct().order_by('region'),
-        'active_count': Member.objects.filter(is_active_record=True, operational_status=Member.OperationalStatus.ACTIVE).count(),
-        'closed_count': Member.objects.filter(is_active_record=True, operational_status=Member.OperationalStatus.CLOSED).count(),
+        'active_count': counts['active'] or 0,
+        'closed_count': counts['closed'] or 0,
     })
 
 
@@ -668,10 +735,39 @@ def member_export(request):
 @login_required
 def member_detail(request, pk):
     member = get_object_or_404(Member, pk=pk)
-    charges = member.charges.filter(Q(monthly_job__isnull=True) | Q(monthly_job__is_current=True)).order_by('-charge_date')[:100]
-    payments = member.payment_allocation_lines.filter(status=PaymentAllocationLine.Status.ACTIVE).select_related('payment').order_by('-payment__payment_date')[:100]
+    current_vehicle = Vehicle.objects.filter(member=member, is_current=True).order_by('-start_date', '-id').first()
+    charges = list(
+        member.charges.filter(
+            Q(monthly_job__isnull=True) | Q(monthly_job__is_current=True)
+        ).annotate(
+            settled_amount_fast=Coalesce(
+                Sum('settlements__amount', filter=Q(settlements__is_active=True)),
+                MONEY_ZERO_VALUE,
+            )
+        ).order_by('-charge_date', '-id')[:100]
+    )
+    for charge in charges:
+        charge.balance_fast = max(Decimal('0'), charge.amount - charge.settled_amount_fast)
+
+    charge_total = member.charges.filter(
+        status=Charge.Status.POSTED,
+    ).filter(
+        Q(monthly_job__isnull=True) | Q(monthly_job__is_current=True)
+    ).aggregate(v=Sum('amount'))['v'] or Decimal('0')
+    settlement_total = ChargeSettlement.objects.filter(
+        charge__member=member, charge__status=Charge.Status.POSTED, is_active=True,
+    ).filter(
+        Q(charge__monthly_job__isnull=True) | Q(charge__monthly_job__is_current=True)
+    ).aggregate(v=Sum('amount'))['v'] or Decimal('0')
+    outstanding_amount = max(Decimal('0'), charge_total - settlement_total)
+
+    payments = member.payment_allocation_lines.filter(
+        status=PaymentAllocationLine.Status.ACTIVE
+    ).select_related('payment').order_by('-payment__payment_date')[:100]
     return render(request, 'core/member_detail.html', {
         'member': member,
+        'current_vehicle': current_vehicle,
+        'outstanding_amount': outstanding_amount,
         'charges': charges,
         'payments': payments,
         'prepayments': member.prepayments.all(),
@@ -709,18 +805,28 @@ def member_edit(request, pk):
     member = get_object_or_404(Member, pk=pk)
     before = json_safe_model(member)
     form = MemberForm(request.POST or None, instance=member)
+    modal = _wants_modal(request)
     if request.method == 'POST' and form.is_valid():
         member = form.save()
         log_action(action='member_updated', instance=member, before=before, actor=_actor(request))
+        if modal:
+            return JsonResponse({'ok': True, 'message': '회원정보를 수정했습니다.'})
         messages.success(request, '회원정보를 수정했습니다.')
         return redirect('core:member_detail', pk=member.pk)
-    return render(request, 'core/member_form.html', {'form': form, 'member': member, 'title': f'{member.name} 회원정보 수정'})
+    context = {'form': form, 'member': member, 'title': f'{member.name} 회원정보 수정'}
+    if modal:
+        return _modal_form_response(
+            request, 'core/partials/member_edit_modal.html', context,
+            status=422 if request.method == 'POST' else 200,
+        )
+    return render(request, 'core/member_form.html', context)
 
 
 @login_required
 def member_close(request, pk):
     member = get_object_or_404(Member, pk=pk)
     form = CloseMemberForm(request.POST or None, initial={'closure_date': timezone.localdate()})
+    modal = _wants_modal(request)
     if request.method == 'POST' and form.is_valid():
         try:
             refunds = close_member(member, actor=_actor(request), **{
@@ -734,11 +840,85 @@ def member_close(request, pk):
                     immediate=True, actor=_actor(request),
                 )
                 send_batch(batch, actor=_actor(request))
+            if modal:
+                return JsonResponse({'ok': True, 'message': '폐업 처리했습니다.'})
             messages.success(request, '폐업 처리했습니다.')
             return redirect('core:member_detail', pk=member.pk)
         except Exception as exc:
-            messages.error(request, str(exc))
+            if modal:
+                form.add_error(None, str(exc))
+            else:
+                messages.error(request, str(exc))
+    context = {'form': form, 'member': member, 'title': f'{member.name} 폐업 처리'}
+    if modal:
+        return _modal_form_response(
+            request, 'core/partials/member_close_modal.html', context,
+            status=422 if request.method == 'POST' else 200,
+        )
     return render(request, 'core/form.html', {'form': form, 'title': f'{member.name} 폐업 처리'})
+
+
+@login_required
+@transaction.atomic
+def member_manual_payment(request, pk):
+    member = get_object_or_404(Member, pk=pk)
+    form = ManualPaymentForm(request.POST or None, member=member)
+    modal = _wants_modal(request)
+    if request.method == 'POST' and form.is_valid():
+        request_key = form.cleaned_data.get('request_key') or ''
+        session_key = f'manual-payment:{request_key}' if request_key else ''
+        if session_key and request.session.get(session_key):
+            if modal:
+                return JsonResponse({'ok': True, 'message': '이미 반영된 입금입니다.'})
+            messages.info(request, '이미 반영된 입금입니다.')
+            return redirect('core:member_detail', pk=member.pk)
+
+        payment_day = form.cleaned_data['payment_date']
+        payment_dt = timezone.make_aware(
+            datetime.combine(payment_day, time(hour=12)),
+            timezone.get_current_timezone(),
+        )
+        job = get_or_create_current_job(payment_day)
+        payer_name = (form.cleaned_data.get('payer_name') or member.name).strip()
+        user_memo = (form.cleaned_data.get('memo') or '').strip()
+        memo_parts = [f'입금자 {payer_name}']
+        if user_memo:
+            memo_parts.append(user_memo)
+        payment = Payment.objects.create(
+            source_type=Payment.SourceType.MANUAL,
+            payment_date=payment_dt,
+            amount=form.cleaned_data['amount'],
+            monthly_job=job,
+            memo=' · '.join(memo_parts),
+            status=Payment.Status.OPEN,
+            is_effective=True,
+        )
+        replace_payment_allocations(
+            payment,
+            [{
+                'member': member,
+                'account_type': form.cleaned_data['account_type'],
+                'amount': form.cleaned_data['amount'],
+                'memo': '회원명단에서 수기입금',
+            }],
+            reason='회원명단 수기입금',
+            actor=_actor(request),
+        )
+        log_action(action='manual_payment_created', instance=payment, actor=_actor(request))
+        if session_key:
+            request.session[session_key] = payment.id
+        if modal:
+            return JsonResponse({'ok': True, 'message': f'{form.cleaned_data["amount"]:,.0f}원 입금을 반영했습니다.'})
+        messages.success(request, '수기입금을 반영했습니다.')
+        return redirect('core:member_detail', pk=member.pk)
+
+    context = {'form': form, 'member': member, 'title': f'{member.name} 수기입금'}
+    if modal:
+        return _modal_form_response(
+            request, 'core/partials/member_payment_modal.html', context,
+            status=422 if request.method == 'POST' else 200,
+        )
+    return render(request, 'core/form.html', {'form': form, 'title': f'{member.name} 수기입금'})
 
 
 @login_required

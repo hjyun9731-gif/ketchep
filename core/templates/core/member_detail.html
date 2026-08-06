@@ -4,10 +4,10 @@
 <div class="page-head member-summary">
   <div class="member-identity">
     <span class="member-avatar">{{ member.name|slice:':1' }}</span>
-    <div><a class="back-link" href="{% if member.operational_status == 'closed' %}{% url 'core:closed_member_list' %}{% else %}{% url 'core:member_list' %}{% endif %}">← 명단</a><h1>{{ member.name }} <span class="badge {{ member.operational_status|status_class }}">{{ member.get_operational_status_display }}</span></h1><p>{% if member.current_vehicle %}{{ member.current_vehicle.vehicle_no }}{% else %}차량번호 없음{% endif %} · {{ member.get_membership_status_display }} · 미수 {{ member.total_outstanding|money }}원</p></div>
+    <div><a class="back-link" href="{% if member.operational_status == 'closed' %}{% url 'core:closed_member_list' %}{% else %}{% url 'core:member_list' %}{% endif %}">← 명단</a><h1>{{ member.name }} <span class="badge {{ member.operational_status|status_class }}">{{ member.get_operational_status_display }}</span></h1><p>{% if current_vehicle %}{{ current_vehicle.vehicle_no }}{% else %}차량번호 없음{% endif %} · {{ member.get_membership_status_display }} · 미수 {{ outstanding_amount|money }}원</p></div>
   </div>
   <div class="page-actions">
-    <a class="button primary" href="{% url 'core:member_edit' member.pk %}">회원정보 수정</a>
+    <a class="button" href="{% url 'core:member_manual_payment' member.pk %}">수기입금</a><a class="button primary" href="{% url 'core:member_edit' member.pk %}">회원정보 수정</a>
     <details class="header-menu">
       <summary>업무 처리 <span>▾</span></summary>
       <div class="menu-panel">
@@ -27,7 +27,7 @@
     <section class="card">
       <div class="card-head"><div><h2>기본정보</h2><p>입금대조와 연락에 사용하는 정보입니다.</p></div></div>
       <div class="card-body info-grid">
-        <div class="info-item"><span>차량번호</span><strong>{% if member.current_vehicle %}{{ member.current_vehicle.vehicle_no }}{% else %}-{% endif %}</strong></div>
+        <div class="info-item"><span>차량번호</span><strong>{% if current_vehicle %}{{ current_vehicle.vehicle_no }}{% else %}-{% endif %}</strong></div>
         <div class="info-item"><span>지역</span><strong>{{ member.region|default:'-' }}</strong></div>
         <div class="info-item"><span>전화번호</span><strong>{{ member.phone|default:'-' }}</strong></div>
         <div class="info-item"><span>주민번호 앞자리</span><strong>{{ member.birth6|default:'-' }}</strong></div>
@@ -48,7 +48,7 @@
 
   <aside class="stack">
     <section class="card card-pad">
-      <div class="balance-box"><span>현재 미수금</span><strong>{{ member.total_outstanding|money }}원</strong></div>
+      <div class="balance-box"><span>현재 미수금</span><strong>{{ outstanding_amount|money }}원</strong></div>
       <h3 style="margin:18px 0 6px;font-size:14px">선납금</h3>
       <ul class="mini-list">{% for p in prepayments %}<li><span>{{ p.get_account_type_display }}</span><strong>{{ p.balance|money }}원</strong></li>{% empty %}<li><span class="muted">선납금 없음</span></li>{% endfor %}</ul>
       <h3 style="margin:18px 0 6px;font-size:14px">환불</h3>
@@ -61,7 +61,7 @@
 
 <section class="card">
   <div class="card-head"><div><h2>부과·미수 내역</h2><p>부과액, 납부액과 남은 잔액입니다.</p></div></div>
-  <div class="table-wrap"><table><thead><tr><th>부과일</th><th>계정</th><th class="right">부과액</th><th class="right">납부액</th><th class="right">잔액</th><th>상태</th></tr></thead><tbody>{% for c in charges %}<tr><td>{{ c.charge_date|date:'Y-m-d' }}</td><td>{{ c.get_account_type_display }}</td><td class="right">{{ c.amount|money }}원</td><td class="right">{{ c.settled_amount|money }}원</td><td class="right money">{{ c.balance|money }}원</td><td><span class="badge {{ c.status|status_class }}">{{ c.get_status_display }}</span></td></tr>{% empty %}<tr><td colspan="6" class="empty">부과 내역이 없습니다.</td></tr>{% endfor %}</tbody></table></div>
+  <div class="table-wrap"><table><thead><tr><th>부과일</th><th>계정</th><th class="right">부과액</th><th class="right">납부액</th><th class="right">잔액</th><th>상태</th></tr></thead><tbody>{% for c in charges %}<tr><td>{{ c.charge_date|date:'Y-m-d' }}</td><td>{{ c.get_account_type_display }}</td><td class="right">{{ c.amount|money }}원</td><td class="right">{{ c.settled_amount_fast|money }}원</td><td class="right money">{{ c.balance_fast|money }}원</td><td><span class="badge {{ c.status|status_class }}">{{ c.get_status_display }}</span></td></tr>{% empty %}<tr><td colspan="6" class="empty">부과 내역이 없습니다.</td></tr>{% endfor %}</tbody></table></div>
 </section>
 <section class="card">
   <div class="card-head"><div><h2>입금 배정 내역</h2><p>통장과 카드에서 이 회원에게 반영된 입금입니다.</p></div></div>

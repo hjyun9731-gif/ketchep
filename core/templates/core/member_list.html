@@ -94,9 +94,10 @@
             <td class="address-cell" title="{{ member.address }}">{{ member.address|default:'-' }}</td>
             <td class="right money {% if member.outstanding_amount > 0 %}has-arrears{% else %}zero-arrears{% endif %}">{{ member.outstanding_amount|money }}원</td>
             <td><div class="row-actions">
-              <a class="mini-action edit" href="{% url 'core:member_edit' member.pk %}">수정</a>
-              <a class="mini-action close" href="{% url 'core:member_close' member.pk %}">폐업</a>
-              <a class="mini-action transfer" href="{% url 'core:member_transfer' member.pk %}">양도양수</a>
+              <a class="mini-action edit" href="{% url 'core:member_edit' member.pk %}" data-modal-url="{% url 'core:member_edit' member.pk %}?modal=1">수정</a>
+              <a class="mini-action payment" href="{% url 'core:member_manual_payment' member.pk %}" data-modal-url="{% url 'core:member_manual_payment' member.pk %}?modal=1">입금</a>
+              <a class="mini-action close" href="{% url 'core:member_close' member.pk %}" data-modal-url="{% url 'core:member_close' member.pk %}?modal=1">폐업</a>
+              <a class="mini-action transfer" href="{% url 'core:member_transfer' member.pk %}">양도</a>
             </div></td>
           </tr>
         {% empty %}<tr><td colspan="12" class="empty">검색 결과가 없습니다.</td></tr>{% endfor %}
@@ -117,7 +118,8 @@
             <td class="address-cell" title="{{ member.address }}">{{ member.address|default:'-' }}</td>
             <td class="right money {% if member.outstanding_amount > 0 %}has-arrears{% else %}zero-arrears{% endif %}">{{ member.outstanding_amount|money }}원</td>
             <td><div class="row-actions">
-              <a class="mini-action edit" href="{% url 'core:member_edit' member.pk %}">수정</a>
+              <a class="mini-action edit" href="{% url 'core:member_edit' member.pk %}" data-modal-url="{% url 'core:member_edit' member.pk %}?modal=1">수정</a>
+              <a class="mini-action payment" href="{% url 'core:member_manual_payment' member.pk %}" data-modal-url="{% url 'core:member_manual_payment' member.pk %}?modal=1">입금</a>
               <a class="mini-action reopen" href="{% url 'core:member_reopen' member.pk %}">재등록</a>
               <a class="mini-action detail" href="{% url 'core:member_detail' member.pk %}">상세</a>
             </div></td>
@@ -137,4 +139,52 @@
     {% endif %}
   </section>
 </div>
+<div class="work-modal-layer" id="workModal" hidden aria-hidden="true">
+  <div class="work-modal-backdrop" data-modal-close></div>
+  <div class="work-modal-stage" id="workModalContent" role="dialog" aria-modal="true" aria-live="polite"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function(){
+  const layer = document.getElementById('workModal');
+  const content = document.getElementById('workModalContent');
+  let loading = false;
+  function closeModal(){
+    layer.hidden = true; layer.setAttribute('aria-hidden','true'); content.innerHTML=''; document.body.classList.remove('modal-open');
+  }
+  async function openModal(url){
+    if(loading) return; loading=true;
+    layer.hidden=false; layer.setAttribute('aria-hidden','false'); document.body.classList.add('modal-open');
+    content.innerHTML='<div class="work-modal-loading">불러오는 중…</div>';
+    try{
+      const response=await fetch(url,{headers:{'X-Requested-With':'XMLHttpRequest'}});
+      content.innerHTML=await response.text();
+      const first=content.querySelector('input:not([type=hidden]),select,textarea'); if(first) first.focus();
+    }catch(error){ content.innerHTML='<div class="work-modal-error">화면을 불러오지 못했습니다. 다시 시도하세요.</div>'; }
+    finally{ loading=false; }
+  }
+  document.addEventListener('click',function(event){
+    const opener=event.target.closest('[data-modal-url]');
+    if(opener){ event.preventDefault(); openModal(opener.dataset.modalUrl); return; }
+    if(event.target.closest('[data-modal-close]')) closeModal();
+  });
+  document.addEventListener('keydown',function(event){ if(event.key==='Escape' && !layer.hidden) closeModal(); });
+  document.addEventListener('submit',async function(event){
+    const form=event.target.closest('[data-modal-form]'); if(!form) return;
+    event.preventDefault();
+    const button=form.querySelector('button[type=submit]'); if(button){button.disabled=true;button.dataset.oldText=button.textContent;button.textContent='저장 중…';}
+    try{
+      const response=await fetch(form.action,{method:'POST',body:new FormData(form),headers:{'X-Requested-With':'XMLHttpRequest'}});
+      const type=response.headers.get('content-type')||'';
+      if(type.includes('application/json')){
+        const data=await response.json();
+        if(data.ok){ closeModal(); window.location.reload(); return; }
+      }
+      content.innerHTML=await response.text();
+    }catch(error){ alert('처리 중 오류가 발생했습니다.'); }
+    finally{ if(button && document.body.contains(button)){button.disabled=false;button.textContent=button.dataset.oldText||'저장';} }
+  });
+})();
+</script>
 {% endblock %}

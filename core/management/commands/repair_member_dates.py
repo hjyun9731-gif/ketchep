@@ -90,10 +90,11 @@ class Command(BaseCommand):
             member = candidates[0]
             matched += 1
 
-            join_raw = _value(raw, ALIASES['join_date'])
-            cert_raw = _value(raw, ALIASES['certificate_date'])
-            status_raw = _value(raw, ALIASES['membership_status'])
-            management_no = str(_value(raw, ALIASES['management_no']) or '').strip()
+            canonical = raw.get('__canonical__') or {}
+            join_raw = canonical.get('join_date') or _value(raw, ALIASES['join_date'])
+            cert_raw = canonical.get('certificate_date') or _value(raw, ALIASES['certificate_date'])
+            status_raw = canonical.get('membership_status') or _value(raw, ALIASES['membership_status'])
+            management_no = str(canonical.get('management_no') or _value(raw, ALIASES['management_no']) or '').strip()
             join_date = parse_date(join_raw)
             cert_date = parse_date(cert_raw)
             status_key = normalize_text(status_raw)

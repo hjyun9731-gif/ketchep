@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+
 from django import forms
 from django.forms import formset_factory
 from django.utils import timezone
@@ -174,19 +176,18 @@ class MemberForm(forms.ModelForm):
     class Meta:
         model = Member
         fields = [
-            'management_no', 'name', 'birth6', 'phone', 'address', 'official_address', 'official_address_custom',
-            'memo', 'region', 'receivable_account_type', 'operational_status', 'membership_status',
-            'membership_started_on', 'membership_ended_on', 'membership_billing_anchor',
-            'management_billing_anchor', 'first_seen_on', 'certificate_issued_on',
-            'certificate_date_recorded_on', 'address_needs_check', 'phone_needs_check', 'sms_opt_out',
-            'collection_status',
+            'management_no', 'name', 'birth6', 'phone', 'address', 'official_address',
+            'official_address_custom', 'memo', 'region', 'receivable_account_type',
+            'membership_status', 'membership_started_on', 'membership_ended_on',
+            'certificate_issued_on',
         ]
         widgets = {
-            'membership_started_on': DateInput(), 'membership_ended_on': DateInput(),
-            'membership_billing_anchor': DateInput(), 'management_billing_anchor': DateInput(),
-            'first_seen_on': DateInput(), 'certificate_issued_on': DateInput(),
-            'certificate_date_recorded_on': DateInput(), 'memo': forms.Textarea(attrs={'rows': 3}),
-            'address': forms.Textarea(attrs={'rows': 2}), 'official_address': forms.Textarea(attrs={'rows': 2}),
+            'membership_started_on': DateInput(),
+            'membership_ended_on': DateInput(),
+            'certificate_issued_on': DateInput(),
+            'memo': forms.Textarea(attrs={'rows': 2}),
+            'address': forms.Textarea(attrs={'rows': 2}),
+            'official_address': forms.Textarea(attrs={'rows': 2}),
         }
 
     def __init__(self, *args, **kwargs):
@@ -213,6 +214,35 @@ class MemberForm(forms.ModelForm):
                 is_current=True, change_reason='회원 상세 수동변경',
             )
         return member
+
+
+class ManualPaymentForm(forms.Form):
+    payment_date = forms.DateField(label='입금일', widget=DateInput())
+    amount = forms.DecimalField(label='입금액', max_digits=14, decimal_places=0, min_value=1)
+    account_type = forms.ChoiceField(
+        label='계정',
+        choices=[
+            (AccountType.MEMBERSHIP_FEE, '협회비'),
+            (AccountType.MANAGEMENT_FEE, '관리비'),
+            (AccountType.CERTIFICATE_FEE, '자격증명 발급비'),
+            (AccountType.OTHER_INCOME, '기타수입'),
+        ],
+    )
+    payer_name = forms.CharField(label='입금자명', required=False, max_length=100)
+    memo = forms.CharField(label='메모', required=False, max_length=255)
+    request_key = forms.CharField(widget=forms.HiddenInput(), required=False)
+
+    def __init__(self, *args, member=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.member = member
+        if not self.is_bound:
+            self.fields['payment_date'].initial = timezone.localdate()
+            self.fields['request_key'].initial = uuid.uuid4().hex
+            if member and member.receivable_account_type:
+                self.fields['account_type'].initial = member.receivable_account_type
+            if member:
+                self.fields['payer_name'].initial = member.name
+
 
 
 class CloseMemberForm(forms.Form):
