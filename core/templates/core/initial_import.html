@@ -1,0 +1,46 @@
+{% extends 'core/base.html' %}
+{% block title %}기존 자료 불러오기{% endblock %}
+{% block content %}
+<div class="simple-page-head">
+  <div>
+    <span class="step-kicker">처음 한 번만</span>
+    <h1>기존 명단을 한꺼번에 불러오기</h1>
+    <p>한 명씩 입력하지 않습니다. 현재 사용 중인 두 파일을 그대로 선택하면 명단과 미수금을 자동으로 가져옵니다.</p>
+  </div>
+  <a class="button" href="{% url 'core:member_list' %}">명단으로 돌아가기</a>
+</div>
+
+<form method="post" enctype="multipart/form-data" class="import-workflow" data-upload-form>
+  {% csrf_token %}
+  <section class="import-step-card">
+    <div class="import-step-number">1</div>
+    <div class="import-step-body">
+      <h2>전체면허자현황 선택</h2>
+      <p>지역, 차량번호, 이름, 연락처, 주소, 가입일, 자격증명 발급일을 가져옵니다.</p>
+      {{ form.license_file }}
+      {% for error in form.license_file.errors %}<div class="field-error">{{ error }}</div>{% endfor %}
+    </div>
+  </section>
+
+  <section class="import-step-card">
+    <div class="import-step-number">2</div>
+    <div class="import-step-body">
+      <h2>미수금 파일 선택</h2>
+      <p>계정, 기존 미수금, 비고와 명단 연결정보를 가져옵니다.</p>
+      {{ form.receivables_file }}
+      {% for error in form.receivables_file.errors %}<div class="field-error">{{ error }}</div>{% endfor %}
+    </div>
+  </section>
+
+  {% if form.non_field_errors %}<div class="alert error">{{ form.non_field_errors }}</div>{% endif %}
+  <div class="import-submit-bar">
+    <div><strong>두 파일을 선택하면 준비 끝</strong><span>같은 파일을 다시 올려도 중복 등록하지 않습니다.</span></div>
+    <button class="button primary large" type="submit">기존 명단 불러오기</button>
+  </div>
+</form>
+
+<div class="plain-note">
+  <strong>이후에는 다시 올릴 필요 없습니다.</strong>
+  <span>신규자는 명단에서 추가하고, 주소·차량번호가 많이 바뀐 경우에만 이 화면에서 최신 파일을 다시 올리면 됩니다.</span>
+</div>
+{% endblock %}

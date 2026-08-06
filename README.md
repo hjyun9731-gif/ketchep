@@ -246,3 +246,15 @@ python manage.py test
 - `docs/DEVELOPMENT_SPEC_V2.md`: 최종 업무·개발명세
 - `docs/UI_STYLE_GUIDE_GRANTER.md`: UI 디자인 기준
 - `docs/ACCEPTANCE_TESTS_V2.md`: 인수시험 항목
+
+## v2.1 단순 업무 화면
+
+일반 사용자는 다음 다섯 메뉴만 사용합니다.
+
+1. 입금대조
+2. 명단
+3. 카드결제
+4. 미수금
+5. 문자
+
+처음 사용할 때는 `기존 자료 불러오기`에서 전체면허자현황과 미수금 파일을 선택합니다. 기존 명단을 한 명씩 입력하지 않습니다.

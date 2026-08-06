@@ -1,55 +1,46 @@
 {% extends 'core/base.html' %}{% load core_extras %}
 {% block title %}{% if closed_mode %}폐업명단{% else %}현재명단{% endif %}{% endblock %}
-{% block breadcrumb %}{% if closed_mode %}폐업명단{% else %}현재명단{% endif %}{% endblock %}
 {% block content %}
-<div class="page-head">
+<div class="simple-page-head">
   <div>
+    <span class="step-kicker">{% if closed_mode %}별도 보관{% else %}회원·비회원 관리{% endif %}</span>
     <h1>{% if closed_mode %}폐업명단{% else %}현재명단{% endif %}</h1>
-    <p class="muted">{% if closed_mode %}폐업자는 현재명단에서 빠지고 이곳에서 미수금·환불·재등록 이력을 관리합니다.{% else %}현재 관리 중인 사람과 최초 부과 전 대상자를 모두 표시합니다.{% endif %}</p>
+    <p>{% if closed_mode %}폐업자는 현재명단에서 제외하고 이곳에 따로 보관합니다.{% else %}현재 관리 중인 사람과 최초 부과 전 대상자가 모두 보입니다.{% endif %}</p>
   </div>
-  {% if not closed_mode %}<a class="button primary" href="{% url 'core:member_create' %}">신규 명단 추가</a>{% endif %}
+  <div class="actions">
+    {% if not closed_mode %}<a class="button" href="{% url 'core:initial_data_import' %}">기존 명단 엑셀 불러오기</a><a class="button primary" href="{% url 'core:member_create' %}">신규 1명 추가</a>{% endif %}
+  </div>
 </div>
 
-<div class="list-tabs">
-  <a class="list-tab {% if not closed_mode %}active{% endif %}" href="{% url 'core:member_list' %}">현재명단</a>
-  <a class="list-tab {% if closed_mode %}active{% endif %}" href="{% url 'core:closed_member_list' %}">폐업명단</a>
+<div class="big-tabs">
+  <a class="{% if not closed_mode %}active{% endif %}" href="{% url 'core:member_list' %}">현재명단</a>
+  <a class="{% if closed_mode %}active{% endif %}" href="{% url 'core:closed_member_list' %}">폐업명단</a>
 </div>
 
-<div class="card filter-card">
-  <form method="get" class="filter-row">
-    <input name="q" value="{{ q }}" placeholder="이름, 차량번호, 비고, 전화번호, 주소">
-    {% if not closed_mode %}
-    <select name="status">
-      <option value="">전체 상태</option>
-      <option value="prebilling" {% if status == 'prebilling' %}selected{% endif %}>최초 부과 전</option>
-      <option value="address" {% if status == 'address' %}selected{% endif %}>주소 확인 필요</option>
-      <option value="phone" {% if status == 'phone' %}selected{% endif %}>연락처 확인 필요</option>
-      <option value="sms_opt_out" {% if status == 'sms_opt_out' %}selected{% endif %}>수신거부</option>
-    </select>
-    {% endif %}
-    <button class="button">검색</button>
+<section class="simple-section no-top-gap">
+  <form method="get" class="simple-search-row">
+    <input name="q" value="{{ q }}" placeholder="이름이나 차량번호 검색">
+    {% if not closed_mode %}<select name="status"><option value="">전체</option><option value="prebilling" {% if status == 'prebilling' %}selected{% endif %}>최초 부과 전</option><option value="address" {% if status == 'address' %}selected{% endif %}>주소 확인</option><option value="phone" {% if status == 'phone' %}selected{% endif %}>연락처 확인</option></select>{% endif %}
+    <button class="button" type="submit">검색</button>
   </form>
-</div>
-
-<div class="card">
-  <div class="table-scroll">
-  <table>
-    <thead><tr><th>성명</th><th>차량번호</th><th>지역</th><th>미수금 계정</th><th>{% if closed_mode %}폐업일{% else %}부과 기준{% endif %}</th><th>상태</th><th>전화</th><th class="right">미수금</th></tr></thead>
-    <tbody>
-    {% for row in members_data %}
-      <tr class="{% if closed_mode %}closed-row{% endif %}">
-        <td><a href="{% url 'core:member_detail' row.member.pk %}"><strong>{{ row.member.name }}</strong></a><br><span class="muted">{{ row.member.birth6 }}</span></td>
-        <td>{% if row.member.current_vehicle %}{{ row.member.current_vehicle.vehicle_no }}{% else %}-{% endif %}</td>
-        <td>{{ row.member.region|default:'-' }}</td>
-        <td>{% if row.member.receivable_account_type %}{{ row.member.get_receivable_account_type_display }}{% elif row.member.membership_status == 'active' %}협회비{% else %}관리비{% endif %}</td>
-        <td>{% if closed_mode %}{{ row.member.closed_on|date:'Y-m-d'|default:'-' }}{% elif row.member.membership_status == 'active' %}{{ row.member.membership_started_on|date:'m-d'|default:'-' }}{% else %}{{ row.member.certificate_issued_on|date:'m-d'|default:'-' }}{% endif %}</td>
-        <td><span class="badge {{ row.member.operational_status|status_class }}">{{ row.member.get_operational_status_display }}</span>{% if row.member.address_needs_check %} <span class="badge warning">주소확인</span>{% endif %}{% if row.member.phone_needs_check %} <span class="badge warning">결번</span>{% endif %}{% if row.member.sms_opt_out %} <span class="badge neutral">수신거부</span>{% endif %}</td>
-        <td>{{ row.member.phone|default:'-' }}</td>
-        <td class="right"><strong>{{ row.outstanding|money }}원</strong></td>
-      </tr>
-    {% empty %}<tr><td colspan="8" class="empty">검색 결과가 없습니다.</td></tr>{% endfor %}
-    </tbody>
-  </table>
+  <div class="simple-table-wrap">
+    <table class="simple-table member-table">
+      <thead><tr><th>이름</th><th>차량번호</th><th>지역</th><th>계정</th><th>{% if closed_mode %}폐업일{% else %}부과 기준일{% endif %}</th><th>상태</th><th>전화번호</th><th>미수금</th></tr></thead>
+      <tbody>
+      {% for row in members_data %}
+        <tr>
+          <td><a href="{% url 'core:member_detail' row.member.pk %}"><strong>{{ row.member.name }}</strong></a></td>
+          <td>{% if row.member.current_vehicle %}<strong>{{ row.member.current_vehicle.vehicle_no }}</strong>{% else %}-{% endif %}</td>
+          <td>{{ row.member.region|default:'-' }}</td>
+          <td>{% if row.member.receivable_account_type %}{{ row.member.get_receivable_account_type_display }}{% elif row.member.membership_status == 'active' %}협회비{% else %}관리비{% endif %}</td>
+          <td>{% if closed_mode %}{{ row.member.closed_on|date:'Y-m-d'|default:'-' }}{% elif row.member.membership_status == 'active' %}{{ row.member.membership_started_on|date:'m-d'|default:'-' }}{% else %}{{ row.member.certificate_issued_on|date:'m-d'|default:'-' }}{% endif %}</td>
+          <td><span class="badge {{ row.member.operational_status|status_class }}">{{ row.member.get_operational_status_display }}</span></td>
+          <td>{{ row.member.phone|default:'-' }}</td>
+          <td><strong>{{ row.outstanding|money }}원</strong></td>
+        </tr>
+      {% empty %}<tr><td colspan="8" class="empty">명단이 없습니다.</td></tr>{% endfor %}
+      </tbody>
+    </table>
   </div>
-</div>
+</section>
 {% endblock %}

@@ -86,13 +86,13 @@ REQUIRED_FIELDS = {
 
 def validate_excel_signature(uploaded_file):
     ext = Path(uploaded_file.name).suffix.lower()
-    if ext not in {'.xls', '.xlsx'}:
-        raise ValueError('xls 또는 xlsx 파일만 업로드할 수 있습니다.')
+    if ext not in {'.xls', '.xlsx', '.xlsm'}:
+        raise ValueError('xls, xlsx 또는 xlsm 파일만 업로드할 수 있습니다.')
     pos = uploaded_file.tell()
     signature = uploaded_file.read(8)
     uploaded_file.seek(pos)
-    if ext == '.xlsx' and not signature.startswith(b'PK'):
-        raise ValueError('확장자는 xlsx이지만 실제 xlsx 파일 형식이 아닙니다.')
+    if ext in {'.xlsx', '.xlsm'} and not signature.startswith(b'PK'):
+        raise ValueError('확장자와 실제 Excel 파일 형식이 맞지 않습니다.')
     if ext == '.xls' and not signature.startswith(bytes.fromhex('D0CF11E0')):
         raise ValueError('확장자는 xls이지만 실제 구형 Excel 파일 형식이 아닙니다.')
 
@@ -132,7 +132,7 @@ def _read_xls(path):
 
 def read_workbook(path: str):
     ext = Path(path).suffix.lower()
-    if ext == '.xlsx':
+    if ext in {'.xlsx', '.xlsm'}:
         return _read_xlsx(path)
     if ext == '.xls':
         return _read_xls(path)

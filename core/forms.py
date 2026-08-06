@@ -38,6 +38,42 @@ class UploadForm(forms.Form):
         return f
 
 
+def _clean_excel_file(file_obj):
+    validate_excel_signature(file_obj)
+    if file_obj.size > 50 * 1024 * 1024:
+        raise forms.ValidationError('파일 크기는 50MB 이하여야 합니다.')
+    return file_obj
+
+
+class InitialDataImportForm(forms.Form):
+    license_file = forms.FileField(
+        label='전체면허자현황',
+        help_text='현재 사용 중인 전체면허자현황 xls, xlsx, xlsm 파일',
+        widget=forms.ClearableFileInput(attrs={'accept': '.xls,.xlsx,.xlsm'}),
+    )
+    receivables_file = forms.FileField(
+        label='미수금 파일',
+        help_text='현재 사용 중인 미수금 xls, xlsx, xlsm 파일',
+        widget=forms.ClearableFileInput(attrs={'accept': '.xls,.xlsx,.xlsm'}),
+    )
+
+    def clean_license_file(self):
+        return _clean_excel_file(self.cleaned_data['license_file'])
+
+    def clean_receivables_file(self):
+        return _clean_excel_file(self.cleaned_data['receivables_file'])
+
+
+class SimpleExcelUploadForm(forms.Form):
+    file = forms.FileField(
+        label='엑셀 파일',
+        widget=forms.ClearableFileInput(attrs={'accept': '.xls,.xlsx,.xlsm'}),
+    )
+
+    def clean_file(self):
+        return _clean_excel_file(self.cleaned_data['file'])
+
+
 class BankPasteForm(forms.Form):
     slot_type = forms.ChoiceField(
         choices=[

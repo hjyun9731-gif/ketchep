@@ -6,6 +6,7 @@ app_name = 'core'
 
 urlpatterns = [
     path('', views.dashboard, name='dashboard'),
+    path('initial-import/', views.initial_data_import, name='initial_data_import'),
     path('bank-paste/', views.bank_paste, name='bank_paste'),
     path('jobs/new/', views.job_create, name='job_create'),
     path('jobs/<int:pk>/', views.job_detail, name='job_detail'),
@@ -33,6 +34,7 @@ urlpatterns = [
 
     path('bank-transactions/', views.bank_transaction_list, name='bank_transaction_list'),
     path('card-transactions/', views.card_transaction_list, name='card_transaction_list'),
+    path('card-transactions/upload/<str:provider>/', views.card_upload, name='card_upload'),
     path('payments/<int:pk>/allocate/', views.payment_allocate, name='payment_allocate'),
     path('charges/', views.charge_list, name='charge_list'),
 

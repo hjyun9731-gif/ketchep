@@ -1,55 +1,19 @@
-화물협회 자동화 프로그램 GitHub 업로드 방법
-=============================================
+강원 화물협회 자동화 v2.1 Simple 배포
 
-1. freight_association_github_ready_v2.0.zip 압축을 풉니다.
+1. 이 ZIP의 압축을 풉니다.
+2. 기존 GitHub 저장소의 파일을 이 폴더 내용으로 교체합니다.
+3. GitHub Desktop에서 변경 내용을 확인합니다.
+4. 커밋 메시지에 `v2.1 단순 화면 및 기존 명단 업로드`를 입력합니다.
+5. Commit → Push origin을 누릅니다.
+6. Railway가 GitHub 저장소와 연결돼 있으면 자동으로 재배포됩니다.
 
-2. 압축을 푼 폴더 안에 아래 파일이 바로 보여야 합니다.
-   manage.py
-   requirements.txt
-   Dockerfile
-   railway.json
-   core
-   config
-   templates
+배포 후 확인 순서
+- 로그인
+- 첫 화면 상단의 `기존 명단 불러오기` 버튼 확인
+- 전체면허자현황 + 미수금 파일 선택
+- 현재명단 인원 확인
+- 카드결제 화면에서 알토란/사이다페이 업로드 확인
 
-3. GitHub Desktop을 실행하고 로그인합니다.
-
-4. File → Add Local Repository → Choose를 누르고 압축을 푼 폴더를 선택합니다.
-
-5. Git 저장소가 아니라는 안내가 나오면 create a repository를 누릅니다.
-
-6. 아래처럼 입력합니다.
-   Name: freight-association-system
-   Description: 화물협회 입금대조 미수금 입금전표 자동화
-   Git ignore: None
-   License: None
-
-7. Create Repository를 누릅니다.
-
-8. 상단 Publish repository를 누릅니다.
-
-9. Keep this code private를 반드시 체크한 상태로 Publish합니다.
-
-10. GitHub 저장소 첫 화면에 아래가 보이면 완료입니다.
-    core/
-    config/
-    docs/
-    templates/
-    Dockerfile
-    manage.py
-    railway.json
-    requirements.txt
-    README.md
-
-절대 올리지 말 것
------------------
-.env
-발송닷컴 아이디와 비밀번호
-실제 회원 엑셀
-실제 농협 거래내역
-회원 전화번호·주소 데이터
-개인정보가 들어 있는 화면 캡처
-
-다음 단계
----------
-GitHub 업로드 → Railway 저장소 연결 → PostgreSQL 추가 → Volume 추가 → 환경변수 등록 → 도메인 생성
+주의
+- 실제 회원 파일, 통장 파일, 비밀번호, .env는 GitHub에 올리지 않습니다.
+- 기존 PostgreSQL DB를 그대로 사용합니다. 이번 버전은 모델 변경이 없어 별도 migration이 없습니다.

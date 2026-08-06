@@ -15,9 +15,10 @@ from django.utils import timezone
 
 from core.forms import (
     AllocationFormSet, ArrearsComposeForm, BankPasteForm, CloseMemberForm, ColumnMappingForm,
+    InitialDataImportForm,
     JoinAssociationForm, LeaveAssociationForm, LegalNoticeForm, MemberForm, QuickMemberForm,
     MessageScheduleEditForm, MonthlyJobForm, RefundForm, RefundMessageForm, RefundPendingForm,
-    ReopenMemberForm, TransferMemberForm, UploadForm,
+    ReopenMemberForm, SimpleExcelUploadForm, TransferMemberForm, UploadForm,
 )
 from core.models import (
     AccountType, AuditLog, BankTransaction, CardTransaction, Charge, ImportIssue, LegalNotice, Member, PayerAlias,
@@ -48,6 +49,31 @@ from core.utils import json_safe_model, normalize_text, sha256_file
 
 def _actor(request):
     return request.user.username if request.user.is_authenticated else 'admin'
+
+
+def _save_and_process_excel(*, job, slot_type, file_obj):
+    digest = sha256_file(file_obj)
+    existing = UploadedFile.objects.filter(
+        job=job, slot_type=slot_type, sha256=digest,
+        parse_status=UploadedFile.ParseStatus.PROCESSED,
+    ).first()
+    if existing:
+        return existing, {'already_processed': 1}
+    uploaded = UploadedFile.objects.create(
+        job=job,
+        slot_type=slot_type,
+        file=file_obj,
+        original_name=file_obj.name,
+        sha256=digest,
+        size=file_obj.size,
+    )
+    parse_uploaded_file(uploaded)
+    if uploaded.parse_status == UploadedFile.ParseStatus.NEEDS_MAPPING:
+        raise ValueError(
+            f'{uploaded.get_slot_type_display()} 파일의 제목행을 자동으로 찾지 못했습니다. '
+            '현재 사용하는 원본 파일을 그대로 올렸는지 확인하세요.'
+        )
+    return uploaded, process_uploaded_file(uploaded)
 
 
 @login_required
@@ -96,6 +122,41 @@ def dashboard(request):
         'paste_forms': paste_forms,
         'today': today,
     })
+
+
+@login_required
+@transaction.atomic
+def initial_data_import(request):
+    form = InitialDataImportForm(request.POST or None, request.FILES or None)
+    if request.method == 'POST' and form.is_valid():
+        job = get_or_create_current_job(timezone.localdate())
+        try:
+            license_upload, license_result = _save_and_process_excel(
+                job=job,
+                slot_type=UploadedFile.SlotType.LICENSE,
+                file_obj=form.cleaned_data['license_file'],
+            )
+            receivable_upload, receivable_result = _save_and_process_excel(
+                job=job,
+                slot_type=UploadedFile.SlotType.RECEIVABLES,
+                file_obj=form.cleaned_data['receivables_file'],
+            )
+            issue_count = ImportIssue.objects.filter(
+                uploaded_file__in=[license_upload, receivable_upload],
+                status=ImportIssue.Status.OPEN,
+            ).count()
+            messages.success(
+                request,
+                '기존 자료를 불러왔습니다. '
+                f"회원 신규 {license_result.get('created_members', 0)}명 · "
+                f"회원 갱신 {license_result.get('updated_members', 0)}명 · "
+                f"기초 미수금 {receivable_result.get('opening_charges', 0)}건 · "
+                f'확인 필요 {issue_count}건',
+            )
+            return redirect('core:member_list')
+        except Exception as exc:
+            messages.error(request, f'기존 자료 불러오기 실패: {exc}')
+    return render(request, 'core/initial_import.html', {'form': form})
 
 
 @login_required
@@ -580,7 +641,45 @@ def card_transaction_list(request):
         'jobs': MonthlyJob.objects.filter(is_current=True),
         'status_choices': CardTransaction.Status.choices,
         'job_id': job_id, 'status': status, 'q': q,
+        'altolan_form': SimpleExcelUploadForm(),
+        'cider_form': SimpleExcelUploadForm(),
     })
+
+
+@login_required
+@transaction.atomic
+def card_upload(request, provider):
+    if request.method != 'POST':
+        raise Http404
+    provider_to_slot = {
+        'altolan': UploadedFile.SlotType.ALTOLAN,
+        'cider': UploadedFile.SlotType.CIDER,
+    }
+    slot_type = provider_to_slot.get(provider)
+    if not slot_type:
+        raise Http404
+    form = SimpleExcelUploadForm(request.POST, request.FILES)
+    if not form.is_valid():
+        messages.error(request, '엑셀 파일을 선택하세요.')
+        return redirect('core:card_transaction_list')
+    try:
+        job = get_or_create_current_job(timezone.localdate())
+        uploaded, result = _save_and_process_excel(
+            job=job, slot_type=slot_type, file_obj=form.cleaned_data['file'],
+        )
+        if result.get('already_processed'):
+            messages.info(request, '이미 올린 같은 파일이라 다시 반영하지 않았습니다.')
+        else:
+            auto_match_card_job(job)
+            messages.success(
+                request,
+                f'{uploaded.get_slot_type_display()} 반영 완료: '
+                f"신규 {result.get('created_transactions', 0)}건 · "
+                f"중복의심 {result.get('duplicates', 0)}건",
+            )
+    except Exception as exc:
+        messages.error(request, f'카드결제 반영 실패: {exc}')
+    return redirect('core:card_transaction_list')
 
 
 @login_required
