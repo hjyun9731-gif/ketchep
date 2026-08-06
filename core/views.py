@@ -42,7 +42,14 @@ from core.services.matching import (
 )
 from core.services.transfers import transfer_member
 from core.services.messaging import (
-    create_arrears_batch, create_refund_batch, retry_failed_batch, send_batch,
+    BalsongClient,
+    cancel_batch,
+    create_arrears_batch,
+    create_refund_batch,
+    retry_failed_batch,
+    send_batch,
+    sync_batch_results,
+    update_batch_schedule,
 )
 from core.utils import json_safe_model, normalize_text, sha256_file
 
@@ -813,7 +820,7 @@ def arrears_compose(request):
     elif contact == 'address':
         members_qs = members_qs.filter(address_needs_check=True)
     elif contact == 'not_sent':
-        members_qs = members_qs.exclude(message_recipients__status=MessageRecipient.Status.SENT).distinct()
+        members_qs = members_qs.exclude(message_recipients__status__in=[MessageRecipient.Status.ACCEPTED, MessageRecipient.Status.SENT]).distinct()
     candidates = [m for m in members_qs if m.total_outstanding > 0]
     form = ArrearsComposeForm(request.POST or None)
     if request.method == 'POST' and form.is_valid():
@@ -840,7 +847,35 @@ def arrears_compose(request):
 
 @login_required
 def message_list(request):
-    return render(request, 'core/message_list.html', {'batches': MessageBatch.objects.all()[:500]})
+    client = BalsongClient()
+    if request.method == 'POST' and request.POST.get('action') == 'check_provider':
+        try:
+            result = client.callback_list()
+            callbacks = [str(item.get('CallBack_No') or '') for item in result.get('List') or []]
+            callback_digits = ''.join(ch for ch in client.callback if ch.isdigit())
+            registered_digits = {
+                ''.join(ch for ch in number if ch.isdigit()) for number in callbacks
+            }
+            if callback_digits and callback_digits not in registered_digits:
+                messages.warning(
+                    request,
+                    f'아이디·비밀번호 연결은 성공했지만 발신번호 {client.callback}가 등록목록에 없습니다.',
+                )
+            else:
+                mode = '시험모드' if client.dry_run else '실전송 모드'
+                messages.success(
+                    request,
+                    f'발송닷컴 연결 정상 · {mode} · 잔액 {int(result.get("Cash") or 0):,}원 · 등록 발신번호 {len(callbacks)}개',
+                )
+        except Exception as exc:
+            messages.error(request, f'발송닷컴 연결 실패: {exc}')
+        return redirect('core:message_list')
+
+    return render(request, 'core/message_list.html', {
+        'batches': MessageBatch.objects.all()[:500],
+        'balsong_dry_run': client.dry_run,
+        'balsong_callback': client.callback,
+    })
 
 
 @login_required
@@ -848,58 +883,111 @@ def message_batch_detail(request, pk):
     batch = get_object_or_404(MessageBatch, pk=pk)
     if request.method == 'POST':
         action = request.POST.get('action')
-        if action == 'update_selection':
-            if batch.status not in {MessageBatch.Status.DRAFT, MessageBatch.Status.SCHEDULED}:
-                messages.error(request, '발송 완료 후에는 대상자를 변경할 수 없습니다.')
-                return redirect('core:message_batch_detail', pk=batch.pk)
-            selected = set(request.POST.getlist('recipient_ids'))
-            for recipient in batch.recipients.all():
-                if recipient.exclusion_reason and recipient.exclusion_reason != '이번 발송 제외':
-                    continue
-                if str(recipient.id) in selected:
-                    recipient.status = MessageRecipient.Status.PENDING
-                    recipient.exclusion_reason = ''
-                else:
-                    recipient.status = MessageRecipient.Status.EXCLUDED
-                    recipient.exclusion_reason = '이번 발송 제외'
-                recipient.save(update_fields=['status', 'exclusion_reason', 'updated_at'])
-            messages.success(request, '이번 발송 대상을 수정했습니다.')
-        elif action == 'confirm':
-            if batch.scheduled_at and batch.scheduled_at > timezone.now():
-                batch.status = MessageBatch.Status.SCHEDULED
-                batch.save(update_fields=['status', 'updated_at'])
-                messages.success(request, '예약 발송을 확정했습니다.')
-            else:
-                send_batch(batch, actor=_actor(request))
-                messages.success(request, '발송 처리를 완료했습니다.')
-        elif action == 'cancel':
-            batch.status = MessageBatch.Status.CANCELLED
-            batch.save(update_fields=['status', 'updated_at'])
-            messages.success(request, '예약/발송을 취소했습니다.')
-        elif action == 'retry_failed':
-            retry = retry_failed_batch(batch, actor=_actor(request))
-            return redirect('core:message_batch_detail', pk=retry.pk)
+        try:
+            if action == 'update_selection':
+                if batch.provider_job_no or batch.status not in {
+                    MessageBatch.Status.DRAFT,
+                    MessageBatch.Status.SCHEDULED,
+                }:
+                    raise ValueError('발송닷컴 접수 후에는 대상자를 변경할 수 없습니다.')
+                selected = set(request.POST.getlist('recipient_ids'))
+                for recipient in batch.recipients.all():
+                    if recipient.exclusion_reason and recipient.exclusion_reason != '이번 발송 제외':
+                        continue
+                    if str(recipient.id) in selected:
+                        recipient.status = MessageRecipient.Status.PENDING
+                        recipient.exclusion_reason = ''
+                    else:
+                        recipient.status = MessageRecipient.Status.EXCLUDED
+                        recipient.exclusion_reason = '이번 발송 제외'
+                    recipient.save(update_fields=['status', 'exclusion_reason', 'updated_at'])
+                messages.success(request, '이번 발송 대상을 수정했습니다.')
+
+            elif action == 'confirm':
+                batch = send_batch(batch, actor=_actor(request))
+                if batch.status == MessageBatch.Status.DRY_RUN:
+                    messages.warning(request, '시험모드 처리만 했습니다. 실제 문자는 발송되지 않았습니다.')
+                elif batch.status == MessageBatch.Status.SCHEDULED:
+                    messages.success(
+                        request,
+                        f'발송닷컴 예약 접수 완료 · 접수번호 {batch.provider_job_no}',
+                    )
+                elif batch.status == MessageBatch.Status.ACCEPTED:
+                    messages.success(
+                        request,
+                        f'발송닷컴 접수 완료 · 접수번호 {batch.provider_job_no}. 전송결과는 결과 확인 버튼으로 갱신합니다.',
+                    )
+                elif batch.status == MessageBatch.Status.FAILED:
+                    messages.error(
+                        request,
+                        (batch.provider_response or {}).get('message', '발송 요청이 실패했습니다.'),
+                    )
+
+            elif action == 'sync_results':
+                batch = sync_batch_results(batch, actor=_actor(request))
+                messages.success(request, f'발송결과를 확인했습니다. 현재 상태: {batch.get_status_display()}')
+
+            elif action == 'cancel':
+                cancel_batch(batch, actor=_actor(request))
+                messages.success(request, '예약발송을 취소했습니다.')
+
+            elif action == 'retry_failed':
+                if batch.provider_job_no and batch.provider_job_no != 'DRY-RUN':
+                    sync_batch_results(batch, actor=_actor(request))
+                retry = retry_failed_batch(batch, actor=_actor(request))
+                return redirect('core:message_batch_detail', pk=retry.pk)
+        except Exception as exc:
+            messages.error(request, str(exc))
         return redirect('core:message_batch_detail', pk=batch.pk)
-    return render(request, 'core/message_batch_detail.html', {'batch': batch, 'recipients': batch.recipients.select_related('member')})
+
+    recipients = batch.recipients.select_related('member')
+    return render(request, 'core/message_batch_detail.html', {
+        'batch': batch,
+        'recipients': recipients,
+        'can_edit_selection': not batch.provider_job_no and batch.status in {
+            MessageBatch.Status.DRAFT,
+            MessageBatch.Status.SCHEDULED,
+        },
+        'can_sync': bool(batch.provider_job_no and batch.provider_job_no != 'DRY-RUN'),
+        'can_cancel': batch.status == MessageBatch.Status.SCHEDULED,
+        'has_failed': batch.recipients.filter(status=MessageRecipient.Status.FAILED).exists(),
+        'preview_recipient': batch.recipients.exclude(status=MessageRecipient.Status.EXCLUDED).first(),
+    })
 
 
 @login_required
 def message_batch_edit(request, pk):
     batch = get_object_or_404(MessageBatch, pk=pk)
     if batch.status not in {MessageBatch.Status.DRAFT, MessageBatch.Status.SCHEDULED}:
-        messages.error(request, '이미 발송된 건은 예약정보를 수정할 수 없습니다.')
+        messages.error(request, '발송 완료 후에는 예약정보를 수정할 수 없습니다.')
         return redirect('core:message_batch_detail', pk=batch.pk)
+
     form = MessageScheduleEditForm(request.POST or None, instance=batch)
     if request.method == 'POST' and form.is_valid():
-        batch = form.save()
-        if batch.scheduled_at and batch.scheduled_at > timezone.now():
-            batch.status = MessageBatch.Status.SCHEDULED
-        else:
-            batch.status = MessageBatch.Status.DRAFT
-        batch.save(update_fields=['status', 'updated_at'])
-        log_action(action='message_schedule_updated', instance=batch, actor=_actor(request))
-        messages.success(request, '예약정보를 수정했습니다.')
-        return redirect('core:message_batch_detail', pk=batch.pk)
+        try:
+            scheduled_at = form.cleaned_data['scheduled_at']
+            due_date = form.cleaned_data['due_date']
+            if batch.provider_job_no:
+                update_batch_schedule(
+                    batch,
+                    scheduled_at=scheduled_at,
+                    due_date=due_date,
+                    actor=_actor(request),
+                )
+            else:
+                batch.scheduled_at = scheduled_at
+                batch.due_date = due_date
+                batch.status = (
+                    MessageBatch.Status.SCHEDULED
+                    if scheduled_at and scheduled_at > timezone.now()
+                    else MessageBatch.Status.DRAFT
+                )
+                batch.save(update_fields=['scheduled_at', 'due_date', 'status', 'updated_at'])
+                log_action(action='message_schedule_updated', instance=batch, actor=_actor(request))
+            messages.success(request, '예약정보를 수정했습니다.')
+            return redirect('core:message_batch_detail', pk=batch.pk)
+        except Exception as exc:
+            messages.error(request, str(exc))
     return render(request, 'core/form.html', {'form': form, 'title': '문자 예약정보 수정'})
 
 

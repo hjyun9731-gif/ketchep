@@ -105,3 +105,92 @@ class BusinessRuleTests(TestCase):
         Charge.objects.create(member=member, account_type=AccountType.MANAGEMENT_FEE, charge_date=date(2026, 2, 10), amount=5000, source_rule='old', monthly_job=old)
         Charge.objects.create(member=member, account_type=AccountType.MANAGEMENT_FEE, charge_date=date(2026, 2, 10), amount=5000, source_rule='new', monthly_job=current)
         self.assertEqual(member.total_outstanding, Decimal('5000'))
+
+
+class TemplateSmokeTests(TestCase):
+    def test_all_html_templates_compile(self):
+        from pathlib import Path
+        from django.conf import settings
+        from django.template.loader import get_template
+
+        roots = [
+            Path(settings.BASE_DIR) / 'templates',
+            Path(settings.BASE_DIR) / 'core' / 'templates',
+        ]
+        names = set()
+        for root in roots:
+            if root.exists():
+                names.update(path.relative_to(root).as_posix() for path in root.rglob('*.html'))
+        self.assertTrue(names)
+        for name in sorted(names):
+            with self.subTest(template=name):
+                get_template(name)
+
+
+class BalsongClientTests(TestCase):
+    def test_sms_lms_payload_is_sent_once_for_multiple_recipients(self):
+        import json
+        from types import SimpleNamespace
+        from unittest.mock import Mock, patch
+        from django.test import override_settings
+        from core.services.messaging import BalsongClient
+
+        recipients = [
+            SimpleNamespace(
+                body='홍길동 님의 미수금은 10,000원입니다. 납부기한까지 납부해 주시기 바랍니다.',
+                phone='010-1111-2222',
+                member=SimpleNamespace(name='홍길동'),
+            ),
+            SimpleNamespace(
+                body='김영희 님의 미수금은 20,000원입니다. 납부기한까지 납부해 주시기 바랍니다.',
+                phone='010-3333-4444',
+                member=SimpleNamespace(name='김영희'),
+            ),
+        ]
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            'Result': 'OK', 'Code': 0, 'Service': 'LMS', 'Job_No': 12345,
+        }
+        with override_settings(
+            BALSONG_API_URL='https://balsong.com/Linkage/API/',
+            BALSONG_USER_ID='user',
+            BALSONG_USER_PW='pw',
+            BALSONG_CALLBACK='0331234567',
+            BALSONG_DRY_RUN=False,
+            ASSOCIATION_NAME='강원 화물협회',
+        ):
+            with patch('core.services.messaging.requests.post', return_value=response) as post:
+                result = BalsongClient().send(subject='미수금 납부 안내', recipients=recipients)
+
+        self.assertEqual(result['Job_No'], 12345)
+        self.assertEqual(post.call_count, 1)
+        payload = post.call_args.kwargs['data']
+        self.assertEqual(payload['Type'], 'Send')
+        self.assertEqual(payload['Service'], 'LMS')
+        self.assertEqual(payload['Callback'], '0331234567')
+        destination = json.loads(payload['Destination'])
+        self.assertEqual(len(destination), 2)
+        self.assertEqual(destination[0]['Phone'], '01011112222')
+        self.assertIn('10,000원', destination[0]['Msg_Text'])
+
+    def test_api_error_response_raises(self):
+        from unittest.mock import Mock, patch
+        from django.test import override_settings
+        from core.services.messaging import BalsongAPIError, BalsongClient
+
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            'Result': 'ERROR', 'Code': 100, 'Message': '인증 실패',
+        }
+        with override_settings(
+            BALSONG_API_URL='https://balsong.com/Linkage/API/',
+            BALSONG_USER_ID='user',
+            BALSONG_USER_PW='bad',
+            BALSONG_CALLBACK='0331234567',
+            BALSONG_DRY_RUN=False,
+        ):
+            with patch('core.services.messaging.requests.post', return_value=response):
+                with self.assertRaises(BalsongAPIError):
+                    BalsongClient().callback_list()

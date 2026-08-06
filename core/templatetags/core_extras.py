@@ -27,6 +27,6 @@ def status_class(value):
         return 'success'
     if value in {'failed', 'cancelled', 'closed', 'returned', 'unknown_recipient', 'unknown_address'}:
         return 'danger'
-    if value in {'review', 'duplicate', 'partial', 'pending', 'scheduled', 'modified', 'needs_mapping', 'absent'}:
+    if value in {'review', 'duplicate', 'partial', 'pending', 'scheduled', 'accepted', 'sending', 'modified', 'needs_mapping', 'absent'}:
         return 'warning'
     return 'neutral'

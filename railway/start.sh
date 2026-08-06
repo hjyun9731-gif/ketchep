@@ -6,6 +6,7 @@ python manage.py ensure_v2_schema
 python manage.py bootstrap_admin
 python manage.py seed_defaults
 python manage.py collectstatic --noinput
+python manage.py validate_templates
 
 exec gunicorn config.wsgi:application \
   --bind "0.0.0.0:${PORT:-8000}" \

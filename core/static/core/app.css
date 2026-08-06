@@ -263,3 +263,10 @@ code{white-space:pre-wrap;word-break:break-all;color:#4d5560;font-size:11px}
 @media(max-width:720px){
   .header-inner,.app-main{width:min(100% - 24px,var(--content))}.app-main{padding-top:22px}.primary-nav a{padding:0 11px}.header-menu .label{display:none}.page-head{flex-direction:column}.page-actions{justify-content:flex-start}.summary-grid,.import-grid,.upload-grid,.action-grid{grid-template-columns:1fr}.filter-bar{align-items:stretch;flex-direction:column}.filter-bar .search{max-width:none}.filter-bar select{width:100%}.filter-popover{position:static;width:100%;margin-top:8px}.info-grid{grid-template-columns:1fr}.info-item:nth-last-child(-n+2){border-bottom:1px solid var(--line)}.info-item:last-child{border-bottom:0}.member-summary{grid-template-columns:1fr}.recipient-row{grid-template-columns:24px 1fr 90px}.recipient-status,.recipient-amount{display:none}.source-summary{grid-template-columns:1fr}.allocation-row{grid-template-columns:1fr}.login-shell{grid-template-columns:1fr}.login-visual{display:none}.login-card{padding:36px 26px}.import-footer,.setup-banner{align-items:flex-start;flex-direction:column}.stats{grid-template-columns:1fr 1fr}
 }
+
+/* 발송닷컴 연동상태 */
+.provider-strip{display:flex;align-items:center;gap:12px;margin:0 0 16px;padding:11px 14px;border:1px solid var(--line);border-radius:10px;background:#fff;font-size:12px}
+.provider-strip strong{font-size:12px}.provider-strip span{color:var(--muted)}
+.provider-strip.success{border-color:#b9dcc9;background:#f1faf5}.provider-strip.success strong{color:#19663d}
+.provider-strip.warning{border-color:#ead8a2;background:#fff9e8}.provider-strip.warning strong{color:#7d5b00}
+@media(max-width:720px){.provider-strip{align-items:flex-start;flex-direction:column;gap:4px}}

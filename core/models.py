@@ -635,7 +635,8 @@ class MessageBatch(TimeStampedModel):
         DRAFT = 'draft', '작성중'
         SCHEDULED = 'scheduled', '예약'
         SENDING = 'sending', '발송중'
-        SENT = 'sent', '완료'
+        ACCEPTED = 'accepted', '접수완료'
+        SENT = 'sent', '전송성공'
         PARTIAL = 'partial', '일부실패'
         FAILED = 'failed', '실패'
         CANCELLED = 'cancelled', '취소'
@@ -659,7 +660,8 @@ class MessageBatch(TimeStampedModel):
 class MessageRecipient(TimeStampedModel):
     class Status(models.TextChoices):
         PENDING = 'pending', '대기'
-        SENT = 'sent', '성공'
+        ACCEPTED = 'accepted', '접수완료'
+        SENT = 'sent', '전송성공'
         FAILED = 'failed', '실패'
         EXCLUDED = 'excluded', '제외'
         CANCELLED = 'cancelled', '취소'
