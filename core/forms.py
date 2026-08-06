@@ -117,6 +117,7 @@ class ColumnMappingForm(forms.Form):
 
 
 class QuickMemberForm(forms.Form):
+    management_no = forms.CharField(label='관리번호', max_length=100, required=False)
     name = forms.CharField(label='성명', max_length=100)
     region = forms.CharField(label='지역', max_length=100)
     vehicle_no = forms.CharField(label='차량번호', max_length=50)
@@ -140,6 +141,7 @@ class QuickMemberForm(forms.Form):
     def save(self):
         status = self.cleaned_data['membership_status']
         member = Member.objects.create(
+            management_no=self.cleaned_data.get('management_no', '').strip(),
             name=self.cleaned_data['name'].strip(),
             region=self.cleaned_data['region'].strip(),
             membership_status=status,
@@ -172,7 +174,7 @@ class MemberForm(forms.ModelForm):
     class Meta:
         model = Member
         fields = [
-            'name', 'birth6', 'phone', 'address', 'official_address', 'official_address_custom',
+            'management_no', 'name', 'birth6', 'phone', 'address', 'official_address', 'official_address_custom',
             'memo', 'region', 'receivable_account_type', 'operational_status', 'membership_status',
             'membership_started_on', 'membership_ended_on', 'membership_billing_anchor',
             'management_billing_anchor', 'first_seen_on', 'certificate_issued_on',

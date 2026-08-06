@@ -30,6 +30,7 @@ HEADER_ALIASES = {
         'official_address': ['공문주소', '송달주소', '우편주소'],
         'memo': ['비고', '특이사항', '메모'],
         'region': ['지역', '시군', '시군구', '관할'],
+        'management_no': ['관리번호', '관리 번호', '회원관리번호'],
         'join_date': ['협회가입일자', '협회가입일', '가입일자', '가입일', '협회가입'],
         'vehicle_no': ['차량번호', '자동차등록번호', '등록번호', '차번'],
         'certificate_date': ['자격증명발급일자', '자격증명발급일', '발급일자', '발급일'],
@@ -458,6 +459,7 @@ def process_license_file(uploaded: UploadedFile):
         phone = _normalize_phone(_mapped_value(row, uploaded, 'phone'))
         memo = str(_mapped_value(row, uploaded, 'memo') or '').strip()
         region = str(_mapped_value(row, uploaded, 'region') or '').strip()
+        management_no = str(_mapped_value(row, uploaded, 'management_no') or '').strip()
         join_raw = _mapped_value(row, uploaded, 'join_date')
         join_date = parse_date(join_raw, default_year=job.year)
         cert_date = parse_date(_mapped_value(row, uploaded, 'certificate_date'), default_year=job.year)
@@ -511,6 +513,7 @@ def process_license_file(uploaded: UploadedFile):
             member.official_address = member.address
         member.memo = memo
         member.region = region
+        member.management_no = management_no or member.management_no
         memo_key = normalize_text(memo)
         member.phone_needs_check = '결번' in memo_key
         member.sms_opt_out = '수신거부' in memo_key

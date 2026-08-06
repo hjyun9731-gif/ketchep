@@ -78,7 +78,7 @@
         <tbody>
         {% for member in page_obj %}
           <tr>
-            <td class="mono" title="{{ member.source_row_key }}">{{ member.source_row_key|short_key }}</td>
+            <td class="mono management-no">{{ member.management_no|default:'-' }}</td>
             <td>{{ member.region|default:'-' }}</td>
             <td><a class="dense-link vehicle-link" href="{% url 'core:member_detail' member.pk %}">{{ member.current_vehicle_no|default:'-' }}</a></td>
             <td><a class="dense-link name-link" href="{% url 'core:member_detail' member.pk %}">{{ member.name }}</a></td>
@@ -93,11 +93,11 @@
             <td class="mono">{{ member.certificate_issued_on|date:'y. n. j.'|default:'-' }}</td>
             <td class="address-cell" title="{{ member.address }}">{{ member.address|default:'-' }}</td>
             <td class="right money {% if member.outstanding_amount > 0 %}has-arrears{% else %}zero-arrears{% endif %}">{{ member.outstanding_amount|money }}원</td>
-            <td class="row-actions">
+            <td><div class="row-actions">
               <a class="mini-action edit" href="{% url 'core:member_edit' member.pk %}">수정</a>
               <a class="mini-action close" href="{% url 'core:member_close' member.pk %}">폐업</a>
               <a class="mini-action transfer" href="{% url 'core:member_transfer' member.pk %}">양도양수</a>
-            </td>
+            </div></td>
           </tr>
         {% empty %}<tr><td colspan="12" class="empty">검색 결과가 없습니다.</td></tr>{% endfor %}
         </tbody>
@@ -108,7 +108,7 @@
         <tbody>
         {% for member in page_obj %}
           <tr>
-            <td class="mono" title="{{ member.source_row_key }}">{{ member.source_row_key|short_key }}</td>
+            <td class="mono management-no">{{ member.management_no|default:'-' }}</td>
             <td>{{ member.region|default:'-' }}</td>
             <td><a class="dense-link vehicle-link" href="{% url 'core:member_detail' member.pk %}">{{ member.current_vehicle_no|default:'-' }}</a></td>
             <td><a class="dense-link name-link" href="{% url 'core:member_detail' member.pk %}">{{ member.name }}</a></td>
@@ -116,11 +116,11 @@
             <td class="mono">{{ member.closed_on|date:'y. n. j.'|default:'-' }}</td>
             <td class="address-cell" title="{{ member.address }}">{{ member.address|default:'-' }}</td>
             <td class="right money {% if member.outstanding_amount > 0 %}has-arrears{% else %}zero-arrears{% endif %}">{{ member.outstanding_amount|money }}원</td>
-            <td class="row-actions">
+            <td><div class="row-actions">
               <a class="mini-action edit" href="{% url 'core:member_edit' member.pk %}">수정</a>
               <a class="mini-action reopen" href="{% url 'core:member_reopen' member.pk %}">재등록</a>
               <a class="mini-action detail" href="{% url 'core:member_detail' member.pk %}">상세</a>
-            </td>
+            </div></td>
           </tr>
         {% empty %}<tr><td colspan="9" class="empty">검색 결과가 없습니다.</td></tr>{% endfor %}
         </tbody>

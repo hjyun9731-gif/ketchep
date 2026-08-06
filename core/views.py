@@ -504,12 +504,12 @@ def member_list(request):
         elif field == 'address':
             members_qs = members_qs.filter(Q(address__icontains=q) | Q(official_address__icontains=q))
         elif field == 'management_no':
-            members_qs = members_qs.filter(source_row_key__icontains=q)
+            members_qs = members_qs.filter(management_no__icontains=q)
         else:
             query = (
                 Q(name__icontains=q) | Q(phone__icontains=digits or q)
                 | Q(address__icontains=q) | Q(official_address__icontains=q)
-                | Q(source_row_key__icontains=q) | Q(birth6__icontains=digits or q)
+                | Q(management_no__icontains=q) | Q(birth6__icontains=digits or q)
                 | Q(memo__icontains=q)
             )
             if vehicle_q:
@@ -561,12 +561,12 @@ def closed_member_list(request):
         elif field == 'address':
             members_qs = members_qs.filter(Q(address__icontains=q) | Q(official_address__icontains=q))
         elif field == 'management_no':
-            members_qs = members_qs.filter(source_row_key__icontains=q)
+            members_qs = members_qs.filter(management_no__icontains=q)
         else:
             query = (
                 Q(name__icontains=q) | Q(phone__icontains=digits or q)
                 | Q(address__icontains=q) | Q(official_address__icontains=q)
-                | Q(source_row_key__icontains=q) | Q(birth6__icontains=digits or q)
+                | Q(management_no__icontains=q) | Q(birth6__icontains=digits or q)
                 | Q(memo__icontains=q)
             )
             if vehicle_q:
@@ -617,7 +617,7 @@ def member_export(request):
 
     for member in rows.iterator(chunk_size=500):
         common = [
-            member.source_row_key or '', member.region or '', member.current_vehicle_no or '', member.name,
+            member.management_no or '', member.region or '', member.current_vehicle_no or '', member.name,
             member.birth6 or '', member.phone or '',
         ]
         if closed:

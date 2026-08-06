@@ -19,12 +19,13 @@ class Command(BaseCommand):
                         column.name
                         for column in connection.introspection.get_table_description(cursor, member_table)
                     }
-                field = Member._meta.get_field('receivable_account_type')
-                if field.column not in columns:
-                    schema_editor.add_field(Member, field)
-                    self.stdout.write(self.style.SUCCESS('Member.receivable_account_type 컬럼 추가'))
-                else:
-                    self.stdout.write('Member.receivable_account_type 컬럼 이미 존재')
+                for field_name in ('receivable_account_type', 'management_no'):
+                    field = Member._meta.get_field(field_name)
+                    if field.column not in columns:
+                        schema_editor.add_field(Member, field)
+                        self.stdout.write(self.style.SUCCESS(f'Member.{field_name} 컬럼 추가'))
+                    else:
+                        self.stdout.write(f'Member.{field_name} 컬럼 이미 존재')
 
             if alias_table not in tables:
                 schema_editor.create_model(PayerAlias)

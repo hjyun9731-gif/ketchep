@@ -61,6 +61,7 @@ class Member(TimeStampedModel):
     official_address_custom = models.BooleanField('공문주소 수동관리', default=False)
     memo = models.TextField('비고', blank=True)
     region = models.CharField('지역', max_length=100, blank=True, db_index=True)
+    management_no = models.CharField('관리번호', max_length=100, blank=True, db_index=True)
     receivable_account_type = models.CharField(
         '미수금 계정', max_length=30, choices=[
             (AccountType.MEMBERSHIP_FEE, '협회비'),
