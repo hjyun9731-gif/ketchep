@@ -43,25 +43,31 @@ HEADER_ALIASES = {
         'bank_account': ['계좌번호', '통장', '계좌', '통장명'],
         'transaction_id': ['거래번호', '거래고유번호', '거래id', '순번'],
     },
+    # 알토란 실제 내려받기 양식(예: 07.09.xlsx): 거래처=차량번호, 수납금액=총결제액,
+    # 이체금액=순정산액, 고객조회번호=거래 식별값.
     UploadedFile.SlotType.ALTOLAN: {
-        'transaction_id': ['거래번호', '승인번호', '결제번호', '주문번호'],
-        'transaction_at': ['결제일시', '거래일시', '결제일', '거래일', '일자'],
-        'vehicle_no': ['차량번호', '차번', '등록번호'],
-        'name': ['성명', '이름', '회원명', '결제자명'],
-        'gross': ['결제금액', '총결제액', '승인금액', '금액'],
-        'fee': ['수수료', '카드수수료'],
-        'net': ['정산금액', '순정산액', '입금예정액'],
-        'settlement_date': ['정산일', '입금일', '지급일'],
+        'transaction_id': ['고객조회번호', '거래번호', '승인번호', '결제번호', '주문번호'],
+        'transaction_at': ['수납월일', '결제일시', '거래일시', '결제일', '거래일', '일자'],
+        'vehicle_no': ['거래처', '거  래  처', '차량번호', '차번', '등록번호', '고객번호'],
+        'name': ['성명', '이름', '회원명', '결제자명', '고객명', '구매자명'],
+        'gross': ['수납금액', '결제금액', '총결제액', '승인금액', '판매금액', '금액'],
+        'fee': ['수수료', '카드수수료', '수수료정보(수수료)'],
+        'net': ['이체금액', '정산금액', '순정산액', '입금예정액'],
+        'settlement_date': ['이체일', '정산일', '정산일시', '입금일', '지급일'],
+        'payment_status': ['처리결과', '결제상태', '상태'],
     },
+    # 사이다페이 실제 결제리스트/정산내역 양식 모두 지원.
     UploadedFile.SlotType.CIDER: {
-        'transaction_id': ['거래번호', '승인번호', '결제번호', '주문번호'],
-        'transaction_at': ['결제일시', '거래일시', '결제일', '거래일', '일자'],
-        'vehicle_no': ['차량번호', '차번', '등록번호'],
-        'name': ['성명', '이름', '회원명', '결제자명'],
-        'gross': ['결제금액', '총결제액', '승인금액', '금액'],
-        'fee': ['수수료', '카드수수료'],
+        'transaction_id': ['주문번호', '승인번호', '거래번호', '결제번호'],
+        'transaction_at': ['완료일시', '결제일', '결제일시', '거래일시', '거래일', '일자'],
+        'vehicle_no': ['고객번호', '차량번호', '차번', '등록번호'],
+        'name': ['구매자명', '고객명', '성명', '이름', '회원명', '결제자명'],
+        'gross': ['판매금액', '결제금액', '총결제액', '승인금액', '금액'],
+        'fee': ['수수료정보(수수료)', '수수료', '카드수수료'],
         'net': ['정산금액', '순정산액', '입금예정액'],
-        'settlement_date': ['정산일', '입금일', '지급일'],
+        'settlement_date': ['정산일시', '정산일', '입금일', '지급일'],
+        'payment_status': ['결제상태', '상태'],
+        'settlement_status': ['정산상태'],
     },
     UploadedFile.SlotType.RECEIVABLES: {
         'region': ['지역', '시군', '시군구', '관할'],
@@ -83,7 +89,7 @@ REQUIRED_FIELDS = {
     UploadedFile.SlotType.BANK_1: {'payer_text', 'amount'},
     UploadedFile.SlotType.BANK_2: {'payer_text', 'amount'},
     UploadedFile.SlotType.BANK_3: {'payer_text', 'amount'},
-    UploadedFile.SlotType.ALTOLAN: {'gross'},
+    UploadedFile.SlotType.ALTOLAN: {'vehicle_no', 'gross'},
     UploadedFile.SlotType.CIDER: {'gross'},
     UploadedFile.SlotType.RECEIVABLES: {'name', 'balance'},
 }
@@ -532,8 +538,8 @@ def process_license_file(uploaded: UploadedFile):
                 member.receivable_account_type = AccountType.MEMBERSHIP_FEE
                 if join_date:
                     member.membership_started_on = join_date
-                elif not member.membership_billing_anchor:
-                    member.membership_billing_anchor = job.period_start
+                # 원본이 O/가입으로만 표시되고 실제 가입일이 없으면 날짜를 만들지 않는다.
+                # 화면에서는 '가입일자 미상'으로 표시한다.
             elif member.membership_status != Member.MembershipStatus.PENDING:
                 member.membership_status = Member.MembershipStatus.NON_MEMBER
                 member.receivable_account_type = AccountType.MANAGEMENT_FEE
@@ -712,12 +718,20 @@ def process_card_file(uploaded: UploadedFile):
     created = skipped = duplicates = changed_count = 0
     seen_keys = set()
     for row in uploaded.parsed_rows.all():
+        payment_status = normalize_text(_mapped_value(row, uploaded, 'payment_status'))
+        if any(token in payment_status for token in ('결제취소', '취소완료', '승인취소')):
+            skipped += 1
+            continue
         gross = parse_decimal(_mapped_value(row, uploaded, 'gross'))
         if gross is None or gross <= 0:
             skipped += 1
             continue
-        fee = parse_decimal(_mapped_value(row, uploaded, 'fee')) or Decimal('0')
         net = parse_decimal(_mapped_value(row, uploaded, 'net'))
+        fee_raw = parse_decimal(_mapped_value(row, uploaded, 'fee'))
+        if fee_raw is None and net is not None:
+            fee = max(Decimal('0'), gross - net)
+        else:
+            fee = fee_raw or Decimal('0')
         if net is None:
             net = gross - fee
         transaction_at = parse_datetime(_mapped_value(row, uploaded, 'transaction_at'), default_year=job.year)

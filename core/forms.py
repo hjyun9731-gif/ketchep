@@ -177,7 +177,7 @@ class MemberForm(forms.ModelForm):
         model = Member
         fields = [
             'management_no', 'name', 'birth6', 'phone', 'address', 'official_address',
-            'official_address_custom', 'memo', 'region', 'receivable_account_type',
+            'memo', 'region', 'receivable_account_type',
             'membership_status', 'membership_started_on', 'membership_ended_on',
             'certificate_issued_on',
         ]
@@ -186,8 +186,8 @@ class MemberForm(forms.ModelForm):
             'membership_ended_on': DateInput(),
             'certificate_issued_on': DateInput(),
             'memo': forms.Textarea(attrs={'rows': 2}),
-            'address': forms.Textarea(attrs={'rows': 2}),
-            'official_address': forms.Textarea(attrs={'rows': 2}),
+            'address': forms.TextInput(),
+            'official_address': forms.TextInput(attrs={'placeholder': '기본 주소와 다를 때만 입력'}),
         }
 
     def __init__(self, *args, **kwargs):
@@ -196,6 +196,14 @@ class MemberForm(forms.ModelForm):
             self.fields['vehicle_no'].initial = self.instance.current_vehicle.vehicle_no
 
     def save(self, commit=True):
+        # 공문주소 수동관리 체크박스는 사용자에게 노출하지 않는다.
+        # 공문주소가 비어 있거나 기본주소와 같으면 기본주소를 따라가고,
+        # 실제로 다른 주소가 입력된 경우에만 내부 플래그를 자동 설정한다.
+        address = (self.cleaned_data.get('address') or '').strip()
+        official = (self.cleaned_data.get('official_address') or '').strip()
+        self.instance.official_address_custom = bool(official and official != address)
+        if not official:
+            self.instance.official_address = address
         member = super().save(commit=commit)
         if not commit:
             return member
@@ -249,7 +257,6 @@ class CloseMemberForm(forms.Form):
     closure_date = forms.DateField(label='폐업일', widget=DateInput())
     reason = forms.CharField(label='폐업사유', required=False, max_length=200)
     memo = forms.CharField(label='메모', required=False, widget=forms.Textarea(attrs={'rows': 3}))
-    send_refund_notice = forms.BooleanField(label='선납금이 있으면 환불 안내문자 즉시 발송', required=False, initial=True)
 
 
 class ReopenMemberForm(forms.Form):
@@ -331,19 +338,14 @@ class MessageScheduleEditForm(forms.ModelForm):
 
 
 class TransferMemberForm(forms.Form):
-    transfer_type = forms.ChoiceField(
-        label='양도양수 유형',
-        choices=[
-            (MemberLink.LinkType.FAMILY_SUCCESSION, '가족·직계 승계 — 기존 미수금 승계'),
-            (MemberLink.LinkType.GENERAL_TRANSFER, '일반 양도양수 — 기존 미수금 미승계'),
-        ],
-    )
-    effective_date = forms.DateField(label='명의 이전일', widget=DateInput())
-    new_name = forms.CharField(label='새 명의자 성명', max_length=100)
+    received_date = forms.DateField(label='접수일자', widget=DateInput())
+    approval_date = forms.DateField(label='인가일자', required=False, widget=DateInput())
+    effective_date = forms.DateField(label='처리일자(양도일)', widget=DateInput())
+    new_name = forms.CharField(label='양수자 성명', max_length=100)
     new_birth6 = forms.CharField(label='주민번호 앞 6자리', max_length=6, required=False)
     new_phone = forms.CharField(label='휴대전화번호', max_length=30, required=False)
-    new_address = forms.CharField(label='기본 주소', required=False, widget=forms.Textarea(attrs={'rows': 2}))
-    new_official_address = forms.CharField(label='공문 주소', required=False, widget=forms.Textarea(attrs={'rows': 2}))
-    new_vehicle_no = forms.CharField(label='새 차량번호', max_length=50, required=False)
+    new_address = forms.CharField(label='주소', required=False, widget=forms.TextInput())
+    new_vehicle_no = forms.CharField(label='차량번호', max_length=50, required=False)
     new_region = forms.CharField(label='지역', max_length=100, required=False)
-    memo = forms.CharField(label='메모', required=False, widget=forms.Textarea(attrs={'rows': 3}))
+    memo = forms.CharField(label='비고', required=False, widget=forms.Textarea(attrs={'rows': 2}))
+

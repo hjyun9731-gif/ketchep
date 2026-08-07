@@ -139,3 +139,13 @@ LOGGING = {
     'handlers': {'console': {'class': 'logging.StreamHandler', 'formatter': 'standard'}},
     'root': {'handlers': ['console'], 'level': os.getenv('LOG_LEVEL', 'INFO')},
 }
+
+# 짧은 목록 메타데이터 캐시. 회원 원장은 DB가 기준이며 수정·폐업·양도 시 즉시 무효화합니다.
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'freight-association-v4',
+        'TIMEOUT': 300,
+        'OPTIONS': {'MAX_ENTRIES': 1000},
+    }
+}

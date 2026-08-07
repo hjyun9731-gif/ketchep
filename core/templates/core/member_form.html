@@ -15,7 +15,7 @@
       <div class="field">{{ form.certificate_issued_on.label_tag }}{{ form.certificate_issued_on }}{{ form.certificate_issued_on.errors }}</div><div class="field">{{ form.membership_ended_on.label_tag }}{{ form.membership_ended_on }}{{ form.membership_ended_on.errors }}</div>
     </div></section>
     <section class="card member-form-section"><div class="section-heading"><div><h2>주소·비고</h2></div></div><div class="member-form-grid cols-2">
-      <div class="field">{{ form.address.label_tag }}{{ form.address }}{{ form.address.errors }}</div><div class="field">{{ form.official_address.label_tag }}{{ form.official_address }}{{ form.official_address.errors }}</div><div class="field span-2 checkbox-field"><label>{{ form.official_address_custom }} <span>공문 주소를 별도로 유지</span></label></div><div class="field span-2">{{ form.memo.label_tag }}{{ form.memo }}{{ form.memo.errors }}</div>
+      <div class="field span-2">{{ form.address.label_tag }}{{ form.address }}{{ form.address.errors }}</div><div class="field span-2">{{ form.official_address.label_tag }}{{ form.official_address }}<small class="field-hint">비워두면 기본 주소를 그대로 사용합니다.</small>{{ form.official_address.errors }}</div><div class="field span-2">{{ form.memo.label_tag }}{{ form.memo }}{{ form.memo.errors }}</div>
     </div></section>
     <div class="member-form-actions"><a class="button" href="{% url 'core:member_detail' member.pk %}">취소</a><button class="button primary" type="submit">저장</button></div>
   </form>

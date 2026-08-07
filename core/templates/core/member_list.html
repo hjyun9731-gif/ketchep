@@ -89,15 +89,14 @@
               {% elif member.membership_status == 'pending' %}<span class="mini-status pending">대기</span>
               {% else %}<span class="mini-status not-joined">미가입</span>{% endif %}
             </td>
-            <td class="mono">{{ member.membership_started_on|date:'y. n. j.'|default:'-' }}</td>
+            <td class="mono membership-date-cell">{% if member.membership_started_on %}{{ member.membership_started_on|date:'y. n. j.' }}{% elif member.membership_status == 'active' %}<span class="unknown-date">가입일자 미상</span>{% else %}-{% endif %}</td>
             <td class="mono">{{ member.certificate_issued_on|date:'y. n. j.'|default:'-' }}</td>
             <td class="address-cell" title="{{ member.address }}">{{ member.address|default:'-' }}</td>
             <td class="right money {% if member.outstanding_amount > 0 %}has-arrears{% else %}zero-arrears{% endif %}">{{ member.outstanding_amount|money }}원</td>
             <td><div class="row-actions">
               <a class="mini-action edit" href="{% url 'core:member_edit' member.pk %}" data-modal-url="{% url 'core:member_edit' member.pk %}?modal=1">수정</a>
               <a class="mini-action payment" href="{% url 'core:member_manual_payment' member.pk %}" data-modal-url="{% url 'core:member_manual_payment' member.pk %}?modal=1">입금</a>
-              <a class="mini-action close" href="{% url 'core:member_close' member.pk %}" data-modal-url="{% url 'core:member_close' member.pk %}?modal=1">폐업</a>
-              <a class="mini-action transfer" href="{% url 'core:member_transfer' member.pk %}">양도</a>
+              <a class="mini-action close" href="{% url 'core:member_close' member.pk %}" data-modal-url="{% url 'core:member_close' member.pk %}?modal=1">폐업·양도·이관</a>
             </div></td>
           </tr>
         {% empty %}<tr><td colspan="12" class="empty">검색 결과가 없습니다.</td></tr>{% endfor %}

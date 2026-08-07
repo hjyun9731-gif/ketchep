@@ -9,6 +9,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.db import transaction
 from django.core.paginator import Paginator
+from django.core.cache import cache
 from django.db.models import Count, DecimalField, ExpressionWrapper, F, OuterRef, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 from django.http import FileResponse, Http404, HttpResponse, JsonResponse
@@ -25,7 +26,7 @@ from core.forms import (
 )
 from core.models import (
     AccountType, AuditLog, BankTransaction, CardTransaction, Charge, ChargeSettlement, ImportIssue, LegalNotice, Member, PayerAlias,
-    MessageBatch, MessageRecipient, MessageTemplate, MonthlyJob, Payment,
+    MessageBatch, MessageRecipient, MessageTemplate, MonthlyJob, Payment, MemberLink,
     PaymentAllocationLine, Prepayment, Refund, UploadedFile, Vehicle,
 )
 from core.services.audit import log_action
@@ -156,10 +157,36 @@ def _attach_member_page_data(page_obj):
 
 
 def _member_status_counts():
-    return Member.objects.filter(is_active_record=True).aggregate(
+    cache_key = 'member-status-counts-v4'
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+    value = Member.objects.filter(is_active_record=True).aggregate(
         active=Count('id', filter=Q(operational_status=Member.OperationalStatus.ACTIVE)),
         closed=Count('id', filter=Q(operational_status=Member.OperationalStatus.CLOSED)),
     )
+    cache.set(cache_key, value, 300)
+    return value
+
+
+def _member_regions():
+    cache_key = 'member-regions-v4'
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+    value = list(
+        Member.objects.filter(is_active_record=True)
+        .exclude(region='')
+        .values_list('region', flat=True)
+        .distinct()
+        .order_by('region')
+    )
+    cache.set(cache_key, value, 600)
+    return value
+
+
+def _invalidate_member_list_cache():
+    cache.delete_many(['member-status-counts-v4', 'member-regions-v4'])
 
 
 def _wants_modal(request):
@@ -611,7 +638,7 @@ def member_list(request):
         'field': field,
         'page_size': page_size,
         'closed_mode': False,
-        'regions': Member.objects.filter(is_active_record=True).exclude(region='').values_list('region', flat=True).distinct().order_by('region'),
+        'regions': _member_regions(),
         'active_count': counts['active'] or 0,
         'closed_count': counts['closed'] or 0,
     })
@@ -671,7 +698,7 @@ def closed_member_list(request):
         'field': field,
         'page_size': page_size,
         'closed_mode': True,
-        'regions': Member.objects.filter(is_active_record=True).exclude(region='').values_list('region', flat=True).distinct().order_by('region'),
+        'regions': _member_regions(),
         'active_count': counts['active'] or 0,
         'closed_count': counts['closed'] or 0,
     })
@@ -790,6 +817,7 @@ def member_create(request):
     form = QuickMemberForm(request.POST or None, initial=initial)
     if request.method == 'POST' and form.is_valid():
         member = form.save()
+        _invalidate_member_list_cache()
         log_action(action='member_created_quick', instance=member, actor=_actor(request))
         messages.success(request, '현재명단에 추가했습니다. 최초 부과일은 가입일·자격증명 발급일 한 달 뒤 같은 날짜로 계산됩니다.')
         return redirect('core:member_detail', pk=member.pk)
@@ -808,6 +836,7 @@ def member_edit(request, pk):
     modal = _wants_modal(request)
     if request.method == 'POST' and form.is_valid():
         member = form.save()
+        _invalidate_member_list_cache()
         log_action(action='member_updated', instance=member, before=before, actor=_actor(request))
         if modal:
             return JsonResponse({'ok': True, 'message': '회원정보를 수정했습니다.'})
@@ -825,37 +854,52 @@ def member_edit(request, pk):
 @login_required
 def member_close(request, pk):
     member = get_object_or_404(Member, pk=pk)
-    form = CloseMemberForm(request.POST or None, initial={'closure_date': timezone.localdate()})
     modal = _wants_modal(request)
+    action_mode = (request.POST.get('action') or request.GET.get('action') or '').strip()
+    if modal and request.method == 'GET' and action_mode not in {'close', 'move'}:
+        return _modal_form_response(
+            request, 'core/partials/member_action_select_modal.html', {'member': member}, status=200,
+        )
+
+    if action_mode not in {'close', 'move'}:
+        action_mode = 'close'
+    initial_reason = '타 지역 이관' if action_mode == 'move' else ''
+    form = CloseMemberForm(
+        request.POST or None,
+        initial={'closure_date': timezone.localdate(), 'reason': initial_reason},
+    )
     if request.method == 'POST' and form.is_valid():
         try:
-            refunds = close_member(member, actor=_actor(request), **{
+            reason = form.cleaned_data['reason'].strip()
+            if action_mode == 'move' and not reason:
+                reason = '타 지역 이관'
+            close_member(member, actor=_actor(request), **{
                 'closure_date': form.cleaned_data['closure_date'],
-                'reason': form.cleaned_data['reason'],
+                'reason': reason,
                 'memo': form.cleaned_data['memo'],
             })
-            if refunds and form.cleaned_data['send_refund_notice']:
-                batch = create_refund_batch(
-                    [r.id for r in refunds], message_type=MessageTemplate.TemplateType.REFUND_NOTICE,
-                    immediate=True, actor=_actor(request),
-                )
-                send_batch(batch, actor=_actor(request))
+            _invalidate_member_list_cache()
+            message = '이관 처리했습니다.' if action_mode == 'move' else '폐업 처리했습니다.'
             if modal:
-                return JsonResponse({'ok': True, 'message': '폐업 처리했습니다.'})
-            messages.success(request, '폐업 처리했습니다.')
+                return JsonResponse({'ok': True, 'message': message})
+            messages.success(request, message)
             return redirect('core:member_detail', pk=member.pk)
         except Exception as exc:
             if modal:
                 form.add_error(None, str(exc))
             else:
                 messages.error(request, str(exc))
-    context = {'form': form, 'member': member, 'title': f'{member.name} 폐업 처리'}
+    context = {
+        'form': form, 'member': member,
+        'title': f'{member.name} {"이관" if action_mode == "move" else "폐업"} 처리',
+        'action_mode': action_mode,
+    }
     if modal:
         return _modal_form_response(
             request, 'core/partials/member_close_modal.html', context,
             status=422 if request.method == 'POST' else 200,
         )
-    return render(request, 'core/form.html', {'form': form, 'title': f'{member.name} 폐업 처리'})
+    return render(request, 'core/form.html', {'form': form, 'title': context['title']})
 
 
 @login_required
@@ -927,6 +971,7 @@ def member_reopen(request, pk):
     form = ReopenMemberForm(request.POST or None, initial={'re_registered_on': timezone.localdate()})
     if request.method == 'POST' and form.is_valid():
         reopen_member(member, actor=_actor(request), **form.cleaned_data)
+        _invalidate_member_list_cache()
         messages.success(request, '재등록 처리했습니다.')
         return redirect('core:member_detail', pk=member.pk)
     return render(request, 'core/form.html', {'form': form, 'title': f'{member.name} 재등록'})
@@ -967,25 +1012,60 @@ def member_leave(request, pk):
 def member_transfer(request, pk):
     member = get_object_or_404(Member, pk=pk)
     current_vehicle = member.current_vehicle
+    today = timezone.localdate()
     initial = {
-        'effective_date': timezone.localdate(),
+        'received_date': today,
+        'approval_date': today,
+        'effective_date': today,
         'new_vehicle_no': current_vehicle.vehicle_no if current_vehicle else '',
         'new_region': member.region,
     }
     form = TransferMemberForm(request.POST or None, initial=initial)
+    modal = _wants_modal(request)
     if request.method == 'POST' and form.is_valid():
         try:
-            new_member, link = transfer_member(member, actor=_actor(request), **form.cleaned_data)
-            messages.success(
-                request,
-                '명의 이전을 처리했습니다. 기존 미수금은 승계했습니다.'
-                if link.arrears_transferred else
-                '일반 양도양수를 처리했습니다. 기존 미수금은 이전 명의자에게 유지됩니다.',
+            memo_bits = []
+            if form.cleaned_data.get('received_date'):
+                memo_bits.append(f"접수일 {form.cleaned_data['received_date']:%Y-%m-%d}")
+            if form.cleaned_data.get('approval_date'):
+                memo_bits.append(f"인가일 {form.cleaned_data['approval_date']:%Y-%m-%d}")
+            if form.cleaned_data.get('memo'):
+                memo_bits.append(form.cleaned_data['memo'].strip())
+            new_member, link = transfer_member(
+                member,
+                transfer_type=MemberLink.LinkType.GENERAL_TRANSFER,
+                effective_date=form.cleaned_data['effective_date'],
+                new_name=form.cleaned_data['new_name'],
+                new_birth6=form.cleaned_data.get('new_birth6', ''),
+                new_phone=form.cleaned_data.get('new_phone', ''),
+                new_address=form.cleaned_data.get('new_address', ''),
+                new_official_address='',
+                new_vehicle_no=form.cleaned_data.get('new_vehicle_no', ''),
+                new_region=form.cleaned_data.get('new_region', ''),
+                memo=' · '.join(memo_bits),
+                actor=_actor(request),
             )
+            if form.cleaned_data.get('approval_date'):
+                new_member.certificate_issued_on = form.cleaned_data['approval_date']
+                new_member.save(update_fields=['certificate_issued_on', 'updated_at'])
+            _invalidate_member_list_cache()
+            message = '도내 양도양수를 처리했습니다. 기존 미수금은 이전 명의자에게 유지됩니다.'
+            if modal:
+                return JsonResponse({'ok': True, 'message': message})
+            messages.success(request, message)
             return redirect('core:member_detail', pk=new_member.pk)
         except Exception as exc:
-            messages.error(request, str(exc))
-    return render(request, 'core/form.html', {'form': form, 'title': f'{member.name} 명의 이전'})
+            if modal:
+                form.add_error(None, str(exc))
+            else:
+                messages.error(request, str(exc))
+    context = {'form': form, 'member': member, 'title': f'{member.name} 도내 양도양수'}
+    if modal:
+        return _modal_form_response(
+            request, 'core/partials/member_transfer_modal.html', context,
+            status=422 if request.method == 'POST' else 200,
+        )
+    return render(request, 'core/form.html', {'form': form, 'title': context['title']})
 
 
 @login_required
@@ -1117,15 +1197,62 @@ def payment_allocate(request, pk):
 @login_required
 def charge_list(request):
     account = request.GET.get('account', '')
+    region = request.GET.get('region', '')
     q = request.GET.get('q', '').strip()
-    charges = Charge.objects.filter(Q(monthly_job__isnull=True) | Q(monthly_job__is_current=True)).select_related('member', 'monthly_job')
+    min_amount = request.GET.get('min_amount', '').strip()
+    max_amount = request.GET.get('max_amount', '').strip()
+    balance_state = request.GET.get('balance_state', 'outstanding')
+
+    charges = (
+        Charge.objects.filter(Q(monthly_job__isnull=True) | Q(monthly_job__is_current=True))
+        .filter(status=Charge.Status.POSTED)
+        .select_related('member', 'monthly_job')
+        .annotate(
+            settled_total=Coalesce(
+                Sum('settlements__amount', filter=Q(settlements__is_active=True)),
+                MONEY_ZERO_VALUE,
+            ),
+        )
+        .annotate(
+            balance_amount=ExpressionWrapper(
+                F('amount') - F('settled_total'), output_field=MONEY_FIELD,
+            ),
+        )
+    )
     if account:
         charges = charges.filter(account_type=account)
+    if region:
+        charges = charges.filter(member__region=region)
     if q:
-        charges = charges.filter(Q(member__name__icontains=q) | Q(member__vehicles__vehicle_no__icontains=q)).distinct()
+        charges = charges.filter(
+            Q(member__name__icontains=q) | Q(member__vehicles__vehicle_no__icontains=q)
+        ).distinct()
+    if balance_state == 'outstanding':
+        charges = charges.filter(balance_amount__gt=0)
+    elif balance_state == 'paid':
+        charges = charges.filter(balance_amount__lte=0)
+    try:
+        if min_amount:
+            charges = charges.filter(balance_amount__gte=Decimal(min_amount.replace(',', '')))
+        if max_amount:
+            charges = charges.filter(balance_amount__lte=Decimal(max_amount.replace(',', '')))
+    except Exception:
+        messages.warning(request, '금액 필터는 숫자로 입력하세요.')
+
+    regions = list(
+        Member.objects.filter(is_active_record=True).exclude(region='')
+        .values_list('region', flat=True).distinct().order_by('region')
+    )
+    paginator = Paginator(charges.order_by('-balance_amount', 'member__region', 'member__name'), 100)
+    page_obj = paginator.get_page(request.GET.get('page'))
     return render(request, 'core/charge_list.html', {
-        'charges': charges.order_by('-charge_date', 'member__name')[:2000],
-        'account_choices': AccountType.choices, 'account': account, 'q': q,
+        'charges': page_obj, 'page_obj': page_obj,
+        'account_choices': [
+            (AccountType.MEMBERSHIP_FEE, '협회비'),
+            (AccountType.MANAGEMENT_FEE, '관리비'),
+        ],
+        'account': account, 'region': region, 'regions': regions, 'q': q,
+        'min_amount': min_amount, 'max_amount': max_amount, 'balance_state': balance_state,
     })
 
 

@@ -19,15 +19,14 @@
       <div class="modal-form-grid cols-3">
         <div class="field">{{ form.membership_status.label_tag }}{{ form.membership_status }}{{ form.membership_status.errors }}</div>
         <div class="field">{{ form.receivable_account_type.label_tag }}{{ form.receivable_account_type }}{{ form.receivable_account_type.errors }}</div>
-        <div class="field">{{ form.membership_started_on.label_tag }}{{ form.membership_started_on }}{{ form.membership_started_on.errors }}</div>
+        <div class="field">{{ form.membership_started_on.label_tag }}{{ form.membership_started_on }}{{ form.membership_started_on.errors }}{% if member.membership_status == 'active' and not member.membership_started_on %}<small class="field-hint warning-text">원본 가입표시 O · 가입일자 미상</small>{% endif %}</div>
         <div class="field">{{ form.certificate_issued_on.label_tag }}{{ form.certificate_issued_on }}{{ form.certificate_issued_on.errors }}</div>
         <div class="field">{{ form.membership_ended_on.label_tag }}{{ form.membership_ended_on }}{{ form.membership_ended_on.errors }}</div>
       </div>
       <div class="modal-section-title">주소·비고</div>
-      <div class="modal-form-grid cols-2">
-        <div class="field">{{ form.address.label_tag }}{{ form.address }}{{ form.address.errors }}</div>
-        <div class="field">{{ form.official_address.label_tag }}{{ form.official_address }}{{ form.official_address.errors }}</div>
-        <div class="field span-all checkbox-field"><label>{{ form.official_address_custom }} <span>공문 주소를 별도로 유지</span></label>{{ form.official_address_custom.errors }}</div>
+      <div class="modal-form-grid cols-2 compact-address-grid">
+        <div class="field span-all">{{ form.address.label_tag }}{{ form.address }}{{ form.address.errors }}</div>
+        <div class="field span-all">{{ form.official_address.label_tag }}{{ form.official_address }}<small class="field-hint">비워두면 기본 주소를 그대로 사용합니다.</small>{{ form.official_address.errors }}</div>
         <div class="field span-all">{{ form.memo.label_tag }}{{ form.memo }}{{ form.memo.errors }}</div>
       </div>
     </div>

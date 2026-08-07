@@ -110,26 +110,45 @@ def _looks_like_money(value):
 
 
 def _heuristic_mapping(rows):
-    sample = rows[:20]
+    """Fallback only when NH headers are not present.
+
+    Old code picked the numerically most-populated column, so row numbers such as
+    20, 19, 18 could be mistaken for deposit amounts. Prefer columns containing
+    realistic monetary magnitudes and only fall back to small numbers when no
+    other numeric column exists.
+    """
+    sample = rows[:40]
     max_cols = max((len(r) for r in sample), default=0)
     date_scores = Counter()
-    money_scores = Counter()
+    money_values = defaultdict(list)
     text_scores = Counter()
     for row in sample:
         for col in range(max_cols):
             value = row[col] if col < len(row) else ''
             if _looks_like_date(value):
                 date_scores[col] += 1
-            if _looks_like_money(value):
-                money_scores[col] += 1
+            parsed = parse_decimal(value)
+            if parsed is not None and parsed > 0:
+                money_values[col].append(parsed)
             if re.search(r'[가-힣A-Za-z]', str(value or '')):
                 text_scores[col] += 1
+
     mapping = {}
     if date_scores:
         mapping['transaction_at'] = date_scores.most_common(1)[0][0]
-    if money_scores:
-        # The deposit amount is usually the first substantial money column after date/type columns.
-        mapping['amount'] = money_scores.most_common(1)[0][0]
+
+    if money_values:
+        candidates = []
+        for col, values in money_values.items():
+            ordered = sorted(values)
+            median = ordered[len(ordered) // 2]
+            max_value = max(ordered)
+            substantial = sum(1 for value in ordered if value >= 1000)
+            # realistic deposit columns win over row-number/index columns
+            score = (1 if substantial else 0, substantial, median, max_value, len(values))
+            candidates.append((score, col))
+        mapping['amount'] = max(candidates)[1]
+
     if text_scores:
         excluded = {mapping.get('transaction_at'), mapping.get('amount')}
         candidates = [(score, col) for col, score in text_scores.items() if col not in excluded]

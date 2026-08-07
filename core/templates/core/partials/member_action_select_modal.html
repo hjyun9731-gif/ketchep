@@ -1,0 +1,15 @@
+<div class="work-modal-card work-modal-small action-select-modal">
+  <div class="work-modal-head">
+    <div><span class="modal-kicker danger">처리 선택</span><h2>{{ member.name }} 처리</h2><p>{{ member.current_vehicle.vehicle_no|default:'차량번호 없음' }}</p></div>
+    <button type="button" class="modal-close" data-modal-close aria-label="닫기">×</button>
+  </div>
+  <div class="work-modal-body">
+    <div class="action-select-note">처리 방식을 선택하세요.</div>
+    <div class="action-choice-list">
+      <a href="{% url 'core:member_close' member.pk %}?modal=1&action=close" data-modal-url="{% url 'core:member_close' member.pk %}?modal=1&action=close"><strong>폐업</strong><span>사업 폐업 · 현재명단에서 폐업명단으로 이동</span></a>
+      <a href="{% url 'core:member_transfer' member.pk %}?modal=1" data-modal-url="{% url 'core:member_transfer' member.pk %}?modal=1"><strong>양도</strong><span>강원도 내 양도양수 · 새 명의자 등록</span></a>
+      <a href="{% url 'core:member_close' member.pk %}?modal=1&action=move" data-modal-url="{% url 'core:member_close' member.pk %}?modal=1&action=move"><strong>이관</strong><span>타 지역 이관 · 현재명단에서 종료 처리</span></a>
+    </div>
+  </div>
+  <div class="work-modal-foot"><button type="button" class="button" data-modal-close>취소</button></div>
+</div>

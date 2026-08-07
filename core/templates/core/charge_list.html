@@ -1,15 +1,20 @@
 {% extends 'core/base.html' %}{% load core_extras %}
 {% block title %}미수금{% endblock %}
 {% block content %}
-<div class="page-head">
-  <div class="page-title"><h1>미수금</h1><p>사람별 부과액, 납부액과 남은 미수금을 확인합니다.</p></div>
-  <div class="page-actions"><a class="button primary" href="{% url 'core:arrears_compose' %}">미수금 문자 보내기</a></div>
-</div>
+<div class="page-head"><div class="page-title"><h1>미수금</h1><p>지역·계정·금액대로 필요한 미수금만 바로 조회합니다.</p></div><div class="page-actions"><a class="button primary" href="{% url 'core:arrears_compose' %}">미수금 문자 보내기</a></div></div>
 <section class="card">
-  <form method="get" class="filter-bar"><input class="search" name="q" value="{{ q }}" placeholder="이름 또는 차량번호"><select name="account"><option value="">협회비·관리비 전체</option>{% for value,label in account_choices %}<option value="{{ value }}" {% if account == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select><button class="button" type="submit">조회</button></form>
-  <div class="table-wrap"><table><thead><tr><th>부과일</th><th>이름</th><th>차량번호</th><th>계정</th><th class="right">부과액</th><th class="right">납부액</th><th class="right">남은 미수금</th><th>상태</th></tr></thead><tbody>
-  {% for c in charges %}<tr><td>{{ c.charge_date|date:'Y-m-d' }}</td><td><a class="table-link" href="{% url 'core:member_detail' c.member.pk %}">{{ c.member.name }}</a></td><td>{% if c.member.current_vehicle %}{{ c.member.current_vehicle.vehicle_no }}{% else %}-{% endif %}</td><td>{{ c.get_account_type_display }}</td><td class="right">{{ c.amount|money }}원</td><td class="right">{{ c.settled_amount|money }}원</td><td class="right money">{{ c.balance|money }}원</td><td><span class="badge {{ c.status|status_class }}">{{ c.get_status_display }}</span></td></tr>
-  {% empty %}<tr><td colspan="8" class="empty">부과내역이 없습니다.</td></tr>{% endfor %}
+  <form method="get" class="arrears-filter-bar">
+    <input class="search" name="q" value="{{ q }}" placeholder="이름 또는 차량번호">
+    <select name="region"><option value="">전체 지역</option>{% for item in regions %}<option value="{{ item }}" {% if region == item %}selected{% endif %}>{{ item }}</option>{% endfor %}</select>
+    <select name="account"><option value="">협회비·관리비 전체</option>{% for value,label in account_choices %}<option value="{{ value }}" {% if account == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+    <select name="balance_state"><option value="outstanding" {% if balance_state == 'outstanding' %}selected{% endif %}>미수금 있는 사람</option><option value="paid" {% if balance_state == 'paid' %}selected{% endif %}>완납</option><option value="all" {% if balance_state == 'all' %}selected{% endif %}>전체</option></select>
+    <input name="min_amount" value="{{ min_amount }}" inputmode="numeric" placeholder="최소금액">
+    <span class="filter-tilde">~</span><input name="max_amount" value="{{ max_amount }}" inputmode="numeric" placeholder="최대금액">
+    <button class="button primary" type="submit">조회</button><a class="button" href="{% url 'core:charge_list' %}">초기화</a>
+  </form>
+  <div class="table-wrap"><table><thead><tr><th>부과일</th><th>지역</th><th>이름</th><th>차량번호</th><th>계정</th><th class="right">부과액</th><th class="right">납부액</th><th class="right">남은 미수금</th></tr></thead><tbody>
+  {% for c in charges %}<tr><td>{{ c.charge_date|date:'Y-m-d' }}</td><td>{{ c.member.region|default:'-' }}</td><td><a class="table-link" href="{% url 'core:member_detail' c.member.pk %}">{{ c.member.name }}</a></td><td>{% if c.member.current_vehicle %}{{ c.member.current_vehicle.vehicle_no }}{% else %}-{% endif %}</td><td>{{ c.get_account_type_display }}</td><td class="right">{{ c.amount|money }}원</td><td class="right">{{ c.settled_total|money }}원</td><td class="right money has-arrears">{{ c.balance_amount|money }}원</td></tr>{% empty %}<tr><td colspan="8" class="empty">조건에 맞는 내역이 없습니다.</td></tr>{% endfor %}
   </tbody></table></div>
+  {% if page_obj.paginator.num_pages > 1 %}<nav class="dense-pagination">{% if page_obj.has_previous %}<a href="?q={{ q|urlencode }}&region={{ region|urlencode }}&account={{ account|urlencode }}&balance_state={{ balance_state }}&min_amount={{ min_amount|urlencode }}&max_amount={{ max_amount|urlencode }}&page={{ page_obj.previous_page_number }}">이전</a>{% endif %}<span><b>{{ page_obj.number }}</b> / {{ page_obj.paginator.num_pages }}</span>{% if page_obj.has_next %}<a href="?q={{ q|urlencode }}&region={{ region|urlencode }}&account={{ account|urlencode }}&balance_state={{ balance_state }}&min_amount={{ min_amount|urlencode }}&max_amount={{ max_amount|urlencode }}&page={{ page_obj.next_page_number }}">다음</a>{% endif %}</nav>{% endif %}
 </section>
 {% endblock %}
