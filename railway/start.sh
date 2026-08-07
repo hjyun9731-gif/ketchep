@@ -4,8 +4,10 @@ set -euo pipefail
 python manage.py migrate --run-syncdb --noinput
 python manage.py ensure_v2_schema
 python manage.py backfill_management_numbers
+python manage.py normalize_management_numbers
 python manage.py repair_member_dates
 python manage.py repair_unknown_join_dates
+python manage.py backfill_receivable_payment_history
 python manage.py bootstrap_admin
 python manage.py seed_defaults
 python manage.py collectstatic --noinput

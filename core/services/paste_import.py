@@ -109,6 +109,130 @@ def _looks_like_money(value):
     return bool(re.fullmatch(r'[-+]?\d+(?:\.\d+)?(?:원)?', text))
 
 
+
+def _parse_bank_money(value):
+    """Parse NH clipboard money cells without confusing thousands separators.
+
+    NH Excel clipboard values may arrive as ``35,805,145`` or ``35.805.145``.
+    This parser treats repeated dots that form 3-digit groups as thousands
+    separators, while leaving ordinary decimal values intact.
+    """
+    if value in (None, ''):
+        return None
+    if isinstance(value, Decimal):
+        return value
+    if isinstance(value, (int, float)):
+        return Decimal(str(value))
+    text = str(value).strip().replace('원', '').replace(' ', '')
+    if not text:
+        return None
+    text = text.replace(',', '')
+    if text.count('.') >= 2 and re.fullmatch(r'[-+]?\d{1,3}(?:\.\d{3})+', text):
+        text = text.replace('.', '')
+    elif text.count('.') == 1 and re.fullmatch(r'[-+]?\d{1,3}\.\d{3}', text):
+        # In NH won-denominated clipboard rows a single 3-digit tail is also
+        # a thousands separator (e.g. 35.145 -> 35,145), not decimal cents.
+        text = text.replace('.', '')
+    text = re.sub(r'[^0-9.\-+]', '', text)
+    try:
+        return Decimal(text) if text else None
+    except Exception:
+        return None
+
+
+def _nh_headerless_mapping(rows):
+    """Detect the fixed NH incoming-transaction clipboard layout.
+
+    The daily NH copy used by the association often omits the header row.
+    A typical row is:
+      순번 | 거래일 | 입금액 | 거래후잔액 | 거래구분 | 입금자명 | 상대은행/계좌
+
+    The old generic heuristic selected the *largest numeric column*, which is
+    the running balance (35,805,145) rather than the deposit (630,000). It also
+    tended to select the bank/account description as the payer. This detector
+    intentionally anchors on the running-balance column and takes the adjacent
+    NH fields instead.
+    """
+    sample = [row for row in rows[:80] if any(str(v).strip() for v in row)]
+    if not sample:
+        return {}
+    max_cols = max(len(r) for r in sample)
+
+    date_scores = Counter()
+    numeric_values = defaultdict(list)
+    nonempty_scores = Counter()
+    for row in sample:
+        for col in range(max_cols):
+            value = row[col] if col < len(row) else ''
+            if _looks_like_date(value):
+                date_scores[col] += 1
+            if str(value or '').strip():
+                nonempty_scores[col] += 1
+            parsed = _parse_bank_money(value)
+            if parsed is not None and parsed >= 0:
+                numeric_values[col].append(parsed)
+
+    if not date_scores:
+        return {}
+    date_col, date_hits = date_scores.most_common(1)[0]
+    if date_hits < max(2, min(5, len(sample) // 3 or 1)):
+        return {}
+
+    # Running balance: dense numeric column after date, typically in the tens
+    # of millions and larger than the deposit column immediately to its left.
+    balance_candidates = []
+    for col, values in numeric_values.items():
+        if col <= date_col or len(values) < 2:
+            continue
+        ordered = sorted(values)
+        median = ordered[len(ordered)//2]
+        million_ratio = sum(v >= 1_000_000 for v in values) / max(1, len(values))
+        density = len(values) / max(1, len(sample))
+        if median >= 1_000_000 and million_ratio >= .55 and density >= .45:
+            balance_candidates.append(((density, million_ratio, median, col), col))
+    if not balance_candidates:
+        return {}
+    balance_col = max(balance_candidates)[1]
+
+    # In the NH incoming-only screen the deposited amount is directly to the
+    # left of the post-transaction balance. If that exact cell is sparse, walk
+    # left only as far as the date column and choose the nearest money column.
+    amount_col = None
+    for col in range(balance_col - 1, date_col, -1):
+        vals = [v for v in numeric_values.get(col, []) if v > 0]
+        if not vals:
+            continue
+        substantial = sum(v >= 1_000 for v in vals)
+        tiny_ratio = sum(v < 100 for v in vals) / max(1, len(vals))
+        if substantial >= 1 and tiny_ratio < .70:
+            amount_col = col
+            break
+    if amount_col is None:
+        return {}
+
+    # NH puts the depositor text two cells to the right of the running balance:
+    # balance | channel/type | depositor | counterparty bank/account. Prefer
+    # that fixed position. Fall back to the first populated text column nearby.
+    payer_col = balance_col + 2 if balance_col + 2 < max_cols and nonempty_scores[balance_col + 2] else None
+    if payer_col is None:
+        for col in range(balance_col + 1, min(max_cols, balance_col + 5)):
+            if nonempty_scores[col]:
+                payer_col = col
+                break
+    if payer_col is None:
+        return {}
+
+    mapping = {
+        'transaction_at': date_col,
+        'amount': amount_col,
+        'balance': balance_col,
+        'payer_text': payer_col,
+    }
+    if date_col > 0:
+        # Usually the transaction sequence shown immediately before the date.
+        mapping['transaction_id'] = date_col - 1
+    return mapping
+
 def _heuristic_mapping(rows):
     """Fallback only when NH headers are not present.
 
@@ -215,6 +339,8 @@ def process_pasted_bank_text(*, slot_type: str, pasted_text: str, actor='admin')
 
     header_index, mapping = _find_header(rows)
     if not mapping:
+        mapping = _nh_headerless_mapping(rows)
+    if not mapping:
         mapping = _heuristic_mapping(rows)
     if 'amount' not in mapping or 'payer_text' not in mapping:
         raise ValueError('입금액과 입금자명 열을 자동으로 찾지 못했습니다. 농협 엑셀의 표 전체를 다시 복사해 붙여넣으세요.')
@@ -244,8 +370,8 @@ def process_pasted_bank_text(*, slot_type: str, pasted_text: str, actor='admin')
     source_row = (header_index + 2) if header_index is not None else 1
 
     for offset, row in enumerate(data_rows):
-        amount = parse_decimal(_cell(row, mapping, 'amount'))
-        withdrawal = parse_decimal(_cell(row, mapping, 'withdrawal'))
+        amount = _parse_bank_money(_cell(row, mapping, 'amount'))
+        withdrawal = _parse_bank_money(_cell(row, mapping, 'withdrawal'))
         payer = _cell(row, mapping, 'payer_text')
         if amount is None or amount <= 0 or (withdrawal and withdrawal > 0 and amount <= 0):
             ignored_rows += 1

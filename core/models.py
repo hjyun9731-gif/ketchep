@@ -577,6 +577,32 @@ class Prepayment(TimeStampedModel):
         ]
 
 
+class HistoricalPaymentRecord(TimeStampedModel):
+    """Read-only historical payment facts imported from the legacy receivables workbook.
+
+    These rows are intentionally separate from Payment/PaymentAllocationLine so that
+    showing 2026 Jan-Jul history never changes the live ledger, current arrears, or
+    prepayment balances.
+    """
+    member = models.ForeignKey(Member, related_name='historical_payment_records', on_delete=models.PROTECT)
+    uploaded_file = models.ForeignKey(UploadedFile, related_name='historical_payment_records', null=True, blank=True, on_delete=models.SET_NULL)
+    year = models.PositiveSmallIntegerField(db_index=True)
+    month = models.PositiveSmallIntegerField(db_index=True)
+    account_type = models.CharField(max_length=30, choices=AccountType.choices, db_index=True)
+    payment_date = models.DateField(null=True, blank=True, db_index=True)
+    payment_date_text = models.CharField(max_length=120, blank=True)
+    amount = models.DecimalField(max_digits=14, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))])
+    source_label = models.CharField(max_length=100, default='미수금 원본')
+    source_key = models.CharField(max_length=255, unique=True, db_index=True)
+    raw_data = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ['-year', '-month', '-payment_date', '-id']
+        indexes = [
+            models.Index(fields=['member', 'year', 'month']),
+        ]
+
+
 class Refund(TimeStampedModel):
     class Status(models.TextChoices):
         PENDING = 'pending', '환불대기'

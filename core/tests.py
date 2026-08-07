@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 
 from core.models import (
@@ -231,3 +231,27 @@ class LegacyHeaderDetectionTests(TestCase):
             rows, UploadedFile.SlotType.RECEIVABLES,
         )
         self.assertEqual(mapping['balance'], 6)
+
+
+class NhHeaderlessPasteRegressionTests(SimpleTestCase):
+    def test_nh_headerless_mapping_uses_deposit_not_running_balance(self):
+        from core.services.paste_import import _nh_headerless_mapping, _parse_bank_money
+        rows = [
+            ['3', '2026-07-28', '30,000', '35,175,145', '폰토스뱅크', '1069', '토스뱅크 0921008'],
+            ['4', '2026-07-28', '630,000', '35,805,145', '폰우체국', '김문영', '우체국 0720102'],
+            ['5', '2026-07-28', '150,000', '35,955,145', '폰신한은행', '미도상', '신한 0887715'],
+            ['6', '2026-07-28', '530,035', '36,485,180', 'PC신한은행', 'ciderpay', '신한 0218290'],
+        ]
+        mapping = _nh_headerless_mapping(rows)
+        self.assertEqual(mapping['transaction_at'], 1)
+        self.assertEqual(mapping['amount'], 2)
+        self.assertEqual(mapping['balance'], 3)
+        self.assertEqual(mapping['payer_text'], 5)
+        self.assertEqual(_parse_bank_money(rows[1][mapping['amount']]), Decimal('630000'))
+        self.assertEqual(_parse_bank_money(rows[1][mapping['balance']]), Decimal('35805145'))
+        self.assertEqual(rows[1][mapping['payer_text']], '김문영')
+
+    def test_dot_thousands_are_parsed_as_won(self):
+        from core.services.paste_import import _parse_bank_money
+        self.assertEqual(_parse_bank_money('35.805.145'), Decimal('35805145'))
+        self.assertEqual(_parse_bank_money('630.000'), Decimal('630000'))

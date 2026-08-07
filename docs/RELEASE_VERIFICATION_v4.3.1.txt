@@ -1,0 +1,8 @@
+v4.3.1 verification
+- Python compileall: PASS
+- template core:url name static check: PASS (46 URL names, 0 missing)
+- core_extras load static check for money/phone/birth filters: PASS
+- member name -> payment history modal URL: present
+- signed member balance template: present
+- historical payment backfill command is executed after migrate --run-syncdb
+- historical payment rows are stored in separate HistoricalPaymentRecord and do not mutate live Payment ledger

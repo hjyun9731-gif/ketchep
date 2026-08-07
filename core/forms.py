@@ -275,14 +275,44 @@ class LeaveAssociationForm(forms.Form):
 
 
 class AllocationLineForm(forms.Form):
-    member = forms.ModelChoiceField(queryset=Member.objects.none(), label='회원')
+    # 3,000+ members must never be rendered as <option> rows.
+    # The real value is kept in a hidden ModelChoiceField and selected through
+    # the AJAX type-ahead picker on the allocation screen.
+    member = forms.ModelChoiceField(
+        queryset=Member.objects.none(), label='회원', widget=forms.HiddenInput(),
+    )
     account_type = forms.ChoiceField(choices=AccountType.choices, label='계정')
     amount = forms.DecimalField(max_digits=14, decimal_places=2, min_value=0.01, label='배정금액')
     memo = forms.CharField(required=False, label='메모')
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fields['member'].queryset = Member.objects.filter(is_active_record=True).order_by('name', 'id')
+        queryset = Member.objects.filter(is_active_record=True)
+        self.fields['member'].queryset = queryset
+        self.member_display = ''
+
+        raw_value = None
+        if self.is_bound:
+            raw_value = self.data.get(self.add_prefix('member'))
+        if not raw_value:
+            raw_value = self.initial.get('member')
+        if isinstance(raw_value, Member):
+            member = raw_value
+        else:
+            try:
+                member = queryset.filter(pk=int(raw_value)).first() if raw_value else None
+            except (TypeError, ValueError):
+                member = None
+        if member:
+            vehicle = member.current_vehicle
+            parts = [member.name]
+            if vehicle and vehicle.vehicle_no:
+                parts.append(vehicle.vehicle_no)
+            if member.region:
+                parts.append(member.region)
+            if member.management_no:
+                parts.append(f'관리 {member.management_no}')
+            self.member_display = ' · '.join(parts)
 
 
 AllocationFormSet = formset_factory(AllocationLineForm, extra=1, can_delete=True)
