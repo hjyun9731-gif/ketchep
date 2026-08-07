@@ -1,0 +1,20 @@
+<div class="work-modal-card work-modal-small">
+  <div class="work-modal-head">
+    <div><span class="modal-kicker payment">수기입금</span><h2>{{ member.name }} 입금 반영</h2><p>{{ member.current_vehicle.vehicle_no|default:'차량번호 없음' }} · 입력 즉시 미수금과 입금전표에 반영됩니다.</p></div>
+    <button type="button" class="modal-close" data-modal-close aria-label="닫기">×</button>
+  </div>
+  <form method="post" action="{% url 'core:member_manual_payment' member.pk %}" data-modal-form>{% csrf_token %}<input type="hidden" name="modal" value="1">{{ form.request_key }}
+    <div class="work-modal-body">
+      {% if form.non_field_errors %}<div class="alert error">{{ form.non_field_errors }}</div>{% endif %}
+      <div class="modal-form-grid cols-2">
+        <div class="field">{{ form.payment_date.label_tag }}{{ form.payment_date }}{{ form.payment_date.errors }}</div>
+        <div class="field">{{ form.amount.label_tag }}{{ form.amount }}{{ form.amount.errors }}</div>
+        <div class="field">{{ form.account_type.label_tag }}{{ form.account_type }}{{ form.account_type.errors }}</div>
+        <div class="field">{{ form.payer_name.label_tag }}{{ form.payer_name }}{{ form.payer_name.errors }}</div>
+        <div class="field span-all">{{ form.memo.label_tag }}{{ form.memo }}{{ form.memo.errors }}</div>
+      </div>
+      <div class="modal-note">입금액이 미수금보다 많으면 남은 금액은 선납금으로 자동 처리됩니다.</div>
+    </div>
+    <div class="work-modal-foot"><button type="button" class="button" data-modal-close>취소</button><button type="submit" class="button primary">입금 반영</button></div>
+  </form>
+</div>

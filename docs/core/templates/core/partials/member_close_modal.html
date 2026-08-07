@@ -1,0 +1,22 @@
+{% load core_extras %}
+<div class="work-modal-card work-modal-small">
+  <div class="work-modal-head danger-head">
+    <div><span class="modal-kicker danger">{% if action_mode == 'move' %}이관처리{% else %}폐업처리{% endif %}</span><h2>{{ member.name }} {% if action_mode == 'move' %}이관{% else %}폐업{% endif %}</h2><p>{{ member.current_vehicle.vehicle_no|default:'차량번호 없음' }}</p></div>
+    <button type="button" class="modal-close" data-modal-close aria-label="닫기">×</button>
+  </div>
+  <form method="post" action="{% url 'core:member_close' member.pk %}?action={{ action_mode }}" data-modal-form>{% csrf_token %}<input type="hidden" name="modal" value="1"><input type="hidden" name="action" value="{{ action_mode }}">
+    <div class="work-modal-body">
+      {% if form.non_field_errors %}<div class="alert error">{{ form.non_field_errors }}</div>{% endif %}
+      <div class="modal-form-grid cols-2 compact-process-grid">
+        <div class="field">{{ form.closure_date.label_tag }}{{ form.closure_date }}{{ form.closure_date.errors }}</div>
+        <div class="field">{{ form.reason.label_tag }}{{ form.reason }}{{ form.reason.errors }}</div>
+        <div class="field span-all">{{ form.memo.label_tag }}{{ form.memo }}{{ form.memo.errors }}</div>
+      </div>
+      <div class="process-summary">
+        <span>현재 미수금 <strong>{{ member.total_outstanding|money }}원</strong></span>
+        <span>처리 후 <strong>신규 부과 중지</strong></span>
+      </div>
+    </div>
+    <div class="work-modal-foot"><button type="button" class="button" data-modal-close>취소</button><button type="submit" class="button danger-button">{% if action_mode == 'move' %}이관 처리{% else %}폐업 처리{% endif %}</button></div>
+  </form>
+</div>

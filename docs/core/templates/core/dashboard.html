@@ -1,0 +1,70 @@
+{% extends 'core/base.html' %}{% load core_extras %}
+{% block title %}입금대조{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div class="page-title"><h1>입금대조</h1><p>농협 엑셀에서 거래내역을 복사해 계좌별로 붙여넣으세요. 확실한 건은 자동 반영되고 애매한 건만 확인합니다.</p></div>
+  <div class="page-actions"><a class="button" href="{% url 'core:bank_transaction_list' %}">처리내역</a><a class="button primary" href="{% url 'core:job_export' job.pk %}">완성본 내려받기</a></div>
+</div>
+
+{% if summary.members == 0 %}
+<section class="setup-banner">
+  <span class="setup-number">1</span>
+  <div class="setup-copy"><strong>먼저 기존 명단을 불러오세요.</strong><span>전체면허자현황과 미수금 파일을 한 번만 올리면 기존 명단이 자동 등록됩니다.</span></div>
+  <a class="button primary" href="{% url 'core:initial_data_import' %}">기존 자료 불러오기</a>
+</section>
+{% endif %}
+
+<div class="summary-grid">
+  <a class="summary-card" href="{% url 'core:member_list' %}"><span>현재 명단</span><strong>{{ summary.members|money }}명</strong></a>
+  <a class="summary-card {% if summary.review_transactions %}attention{% endif %}" href="{% url 'core:bank_transaction_list' %}?status=review"><span>확인할 입금</span><strong>{{ summary.review_transactions }}건</strong></a>
+  <a class="summary-card" href="{% url 'core:charge_list' %}"><span>현재 미수금</span><strong>{{ summary.outstanding|money }}원</strong></a>
+  <a class="summary-card" href="{% url 'core:closed_member_list' %}"><span>폐업명단</span><strong>{{ summary.closed_members }}명</strong></a>
+</div>
+
+<div class="dashboard-grid">
+  <section class="card">
+    <div class="card-head"><div><h2>농협 거래내역 붙여넣기</h2><p>계좌별로 한 번씩 처리하세요. 같은 거래를 다시 붙여넣어도 중복 반영하지 않습니다.</p></div></div>
+    <div class="card-body account-list">
+      <form class="account-card" method="post" action="{% url 'core:bank_paste' %}" data-paste-form>
+        {% csrf_token %}{{ paste_forms.bank_1.slot_type }}
+        <div class="account-card-head"><div class="account-name"><span class="account-index">1</span><div><strong>농협 계좌 1</strong><small>첫 번째 계좌</small></div></div></div>
+        {{ paste_forms.bank_1.pasted_text }}
+        <div class="account-card-actions"><button class="button primary" type="submit">계좌 1 처리</button></div>
+      </form>
+      <form class="account-card" method="post" action="{% url 'core:bank_paste' %}" data-paste-form>
+        {% csrf_token %}{{ paste_forms.bank_2.slot_type }}
+        <div class="account-card-head"><div class="account-name"><span class="account-index">2</span><div><strong>농협 계좌 2</strong><small>두 번째 계좌</small></div></div></div>
+        {{ paste_forms.bank_2.pasted_text }}
+        <div class="account-card-actions"><button class="button primary" type="submit">계좌 2 처리</button></div>
+      </form>
+      <form class="account-card" method="post" action="{% url 'core:bank_paste' %}" data-paste-form>
+        {% csrf_token %}{{ paste_forms.bank_3.slot_type }}
+        <div class="account-card-head"><div class="account-name"><span class="account-index">3</span><div><strong>농협 계좌 3</strong><small>세 번째 계좌</small></div></div></div>
+        {{ paste_forms.bank_3.pasted_text }}
+        <div class="account-card-actions"><button class="button primary" type="submit">계좌 3 처리</button></div>
+      </form>
+    </div>
+  </section>
+
+  <aside class="stack">
+    <section class="card card-pad">
+      <h2 class="section-title">오늘 처리 현황</h2>
+      <div class="task-list">
+        <div class="task-row"><div><strong>오늘 입금</strong><span>{{ summary.today_count }}건</span></div><strong>{{ summary.today_amount|money }}원</strong></div>
+        <div class="task-row"><div><strong>자동 반영</strong><span>회원·계정까지 자동 처리</span></div><strong>{{ summary.auto_matched }}건</strong></div>
+        <div class="task-row"><div><strong>확인 필요</strong><span>직접 선택해야 하는 거래</span></div><strong>{{ summary.review_transactions }}건</strong></div>
+        <div class="task-row"><div><strong>선납금</strong><span>현재 보유 잔액</span></div><strong>{{ summary.prepayment|money }}원</strong></div>
+      </div>
+    </section>
+    <section class="card">
+      <div class="card-head"><div><h2>확인할 입금</h2><p>애매한 거래만 표시합니다.</p></div><a class="button small" href="{% url 'core:bank_transaction_list' %}?status=review">전체</a></div>
+      <div class="table-wrap">
+        <table><thead><tr><th>입금자</th><th class="right">금액</th><th></th></tr></thead><tbody>
+        {% for tx in review_rows %}<tr><td><strong>{{ tx.payer_text|default:'식별정보 없음' }}</strong><div class="small-text">{{ tx.transaction_at|date:'m-d H:i'|default:'-' }}</div></td><td class="right money">{{ tx.amount|money }}원</td><td class="table-actions"><a class="button small primary" href="{% url 'core:payment_allocate' tx.payment.pk %}">확인</a></td></tr>
+        {% empty %}<tr><td colspan="3" class="empty">확인할 입금이 없습니다.</td></tr>{% endfor %}
+        </tbody></table>
+      </div>
+    </section>
+  </aside>
+</div>
+{% endblock %}

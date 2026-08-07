@@ -1,0 +1,37 @@
+{% extends 'core/base.html' %}
+{% block title %}기존 자료 불러오기{% endblock %}
+{% block content %}
+<div class="import-shell">
+  <div class="page-head">
+    <div class="page-title"><a class="back-link" href="{% url 'core:member_list' %}">← 명단</a><h1>기존 자료 불러오기</h1><p>처음 한 번만 전체면허자현황과 미수금 파일을 선택하세요. 기존 사람을 일일이 입력하지 않습니다.</p></div>
+  </div>
+  <form method="post" enctype="multipart/form-data" data-upload-form>
+    {% csrf_token %}
+    <div class="import-grid">
+      <section class="import-card">
+        <div class="import-card-top"><span class="import-step">1</span><div><h2>전체면허자현황</h2><p>이름, 차량번호, 지역, 연락처, 주소와 가입정보를 가져옵니다.</p></div></div>
+        {{ form.license_file }}
+        {% for error in form.license_file.errors %}<div class="errorlist">{{ error }}</div>{% endfor %}
+      </section>
+      <section class="import-card">
+        <div class="import-card-top"><span class="import-step">2</span><div><h2>미수금 파일</h2><p>계정, 미수금, 입금일, 비고와 기존 연결정보를 가져옵니다.</p></div></div>
+        {{ form.receivables_file }}
+        {% for error in form.receivables_file.errors %}<div class="errorlist">{{ error }}</div>{% endfor %}
+      </section>
+    </div>
+    {% if form.non_field_errors %}<div class="alert error">{{ form.non_field_errors }}</div>{% endif %}
+    <div class="import-footer">
+      <div><strong>두 파일을 선택하면 자동으로 합칩니다.</strong><span>같은 파일을 다시 올려도 중복 회원을 만들지 않습니다.</span></div>
+      <button class="button primary large" type="submit">명단 불러오기</button>
+    </div>
+  </form>
+  <section class="card card-pad" style="margin-top:16px">
+    <h2 class="section-title">불러온 뒤에는</h2>
+    <div class="task-list">
+      <div class="task-row"><div><strong>기존 명단</strong><span>프로그램에 계속 저장됩니다.</span></div><span class="badge success">자동 유지</span></div>
+      <div class="task-row"><div><strong>신규자</strong><span>명단에서 한 명씩 추가하거나 자격증명 입금에서 등록합니다.</span></div></div>
+      <div class="task-row"><div><strong>폐업자</strong><span>폐업 처리하면 현재명단에서 빠지고 폐업명단으로 이동합니다.</span></div></div>
+    </div>
+  </section>
+</div>
+{% endblock %}

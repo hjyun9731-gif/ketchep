@@ -1,0 +1,10 @@
+Railway > Variables에 다음 항목을 등록하세요.
+
+BALSONG_API_URL=https://balsong.com/Linkage/API/
+BALSONG_USER_ID=<사용자가 제공한 발송닷컴 아이디>
+BALSONG_USER_PW=<사용자가 제공한 발송닷컴 비밀번호>
+BALSONG_CALLBACK=<발송닷컴에 등록된 발신번호>
+BALSONG_DRY_RUN=1
+
+주의: 아이디/비밀번호를 GitHub 코드나 ZIP에 직접 저장하지 마세요.
+연결 확인 후 본인번호 시험발송 때만 BALSONG_DRY_RUN=0으로 바꾸세요.

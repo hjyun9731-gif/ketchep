@@ -1,0 +1,71 @@
+{% load core_extras %}
+<div class="work-modal-card payment-history-modal">
+  <div class="work-modal-head">
+    <div>
+      <span class="modal-kicker">입금내역</span>
+      <h2>{{ member.name }} 입금내역</h2>
+      <p>{{ year }}년 1월~7월 기존 미수금 파일의 입금액·입금일을 조회합니다.</p>
+    </div>
+    <button type="button" class="modal-close" data-modal-close aria-label="닫기">×</button>
+  </div>
+  <div class="work-modal-body payment-history-body">
+    <div class="history-month-grid">
+      {% for row in month_rows %}
+      <div class="history-month-card {% if row.amount > 0 %}has-value{% endif %}">
+        <span>{{ row.month }}월</span>
+        <strong>{{ row.amount|money }}원</strong>
+      </div>
+      {% endfor %}
+      <div class="history-month-card total">
+        <span>1~7월 합계</span>
+        <strong>{{ legacy_total|money }}원</strong>
+      </div>
+    </div>
+
+    <section class="history-section">
+      <div class="history-section-head">
+        <div><h3>기존 1~7월 입금내역</h3><p>기존 미수금 파일에서 가져온 값입니다. 원본에서 날짜가 깨진 경우 그대로 표시합니다.</p></div>
+      </div>
+      <div class="history-table-wrap">
+        <table class="history-table">
+          <thead><tr><th>월</th><th>입금일</th><th>계정</th><th class="right">입금액</th><th>출처</th></tr></thead>
+          <tbody>
+          {% for item in legacy %}
+            <tr>
+              <td>{{ item.month }}월</td>
+              <td class="mono">{% if item.payment_date %}{{ item.payment_date|date:'Y-m-d' }}{% elif item.payment_date_text %}{{ item.payment_date_text }}{% else %}날짜 미상{% endif %}</td>
+              <td>{{ item.get_account_type_display }}</td>
+              <td class="right money">{{ item.amount|money }}원</td>
+              <td>{{ item.source_label }}</td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="5" class="empty">1~7월 입금이력이 아직 복구되지 않았습니다. 배포 로그의 '1~7월 입금내역 복구 완료'를 확인하세요.</td></tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    {% if live_lines %}
+    <section class="history-section live-history-section">
+      <div class="history-section-head"><div><h3>프로그램에서 처리한 입금</h3><p>통장·카드·수기입금으로 실제 프로그램에 반영된 동일 기간 기록입니다.</p></div></div>
+      <div class="history-table-wrap">
+        <table class="history-table">
+          <thead><tr><th>입금일시</th><th>계정</th><th class="right">금액</th><th>출처</th><th>메모</th></tr></thead>
+          <tbody>{% for line in live_lines %}<tr>
+            <td class="mono">{{ line.payment.payment_date|date:'Y-m-d H:i' }}</td>
+            <td>{{ line.get_account_type_display }}</td>
+            <td class="right money">{{ line.amount|money }}원</td>
+            <td>{{ line.payment.get_source_type_display }}</td>
+            <td>{{ line.memo|default:'-' }}</td>
+          </tr>{% endfor %}</tbody>
+        </table>
+      </div>
+    </section>
+    {% endif %}
+  </div>
+  <div class="work-modal-foot">
+    <a class="button" href="{% url 'core:member_detail' member.pk %}">회원 상세</a>
+    <button type="button" class="button primary" data-modal-close>닫기</button>
+  </div>
+</div>

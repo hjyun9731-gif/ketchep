@@ -1,0 +1,103 @@
+{% extends 'core/base.html' %}{% load core_extras %}
+{% block title %}문자 최종 확인{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div class="page-title">
+    <a class="back-link" href="{% url 'core:message_list' %}">← 문자발송</a>
+    <h1>문자 최종 확인</h1>
+    <p>
+      {{ batch.get_message_type_display }} ·
+      <span class="badge {{ batch.status|status_class }}">{{ batch.get_status_display }}</span>
+      {% if batch.provider_job_no %} · 접수번호 {{ batch.provider_job_no }}{% endif %}
+    </p>
+  </div>
+  <div class="page-actions">
+    {% if can_edit_selection %}<a class="button" href="{% url 'core:message_batch_edit' batch.pk %}">날짜 수정</a>{% endif %}
+    {% if can_sync %}
+      <form method="post">{% csrf_token %}<input type="hidden" name="action" value="sync_results">
+        <button class="button primary" type="submit">발송결과 확인</button>
+      </form>
+    {% endif %}
+  </div>
+</div>
+
+{% if batch.status == 'accepted' %}
+<div class="provider-strip success"><strong>발송닷컴 접수완료</strong><span>아직 통신사 성공 확정 전입니다. `발송결과 확인`을 눌러 갱신하세요.</span></div>
+{% elif batch.status == 'scheduled' and batch.provider_job_no %}
+<div class="provider-strip success"><strong>발송닷컴 예약완료</strong><span>{{ batch.scheduled_at|date:'Y-m-d H:i' }}에 발송됩니다.</span></div>
+{% elif batch.status == 'dry_run' %}
+<div class="provider-strip warning"><strong>시험모드</strong><span>실제 문자는 발송되지 않았습니다.</span></div>
+{% endif %}
+
+<div class="sms-grid">
+  <section class="card sms-recipient-card">
+    <div class="card-head">
+      <div><h2>수신 대상</h2><p>{% if can_edit_selection %}제외할 사람만 체크를 해제하세요.{% else %}발송닷컴에 접수된 대상과 결과입니다.{% endif %}</p></div>
+    </div>
+    <form method="post">{% csrf_token %}<input type="hidden" name="action" value="update_selection">
+      <div class="recipient-toolbar">
+        <span>총 {{ recipients|length }}명</span>
+        {% if can_edit_selection %}<button class="button small" type="submit">선택 저장</button>{% endif %}
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr>{% if can_edit_selection %}<th>발송</th>{% endif %}<th>회원</th><th>전화번호</th><th class="right">금액</th><th>상태</th><th>제외·실패 사유</th></tr></thead>
+        <tbody>
+        {% for r in recipients %}
+          <tr>
+            {% if can_edit_selection %}
+            <td><input type="checkbox" name="recipient_ids" value="{{ r.pk }}"
+              {% if r.status == 'pending' or r.status == 'failed' %}checked{% endif %}
+              {% if r.exclusion_reason and r.exclusion_reason != '이번 발송 제외' %}disabled{% endif %}></td>
+            {% endif %}
+            <td><a class="table-link" href="{% url 'core:member_detail' r.member.pk %}">{{ r.member.name }}</a></td>
+            <td>{{ r.phone }}</td>
+            <td class="right money">{{ r.amount_snapshot|money }}원</td>
+            <td><span class="badge {{ r.status|status_class }}">{{ r.get_status_display }}</span></td>
+            <td>{{ r.exclusion_reason }}{% if r.exclusion_reason and r.failure_reason %} · {% endif %}{{ r.failure_reason }}</td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="{% if can_edit_selection %}6{% else %}5{% endif %}" class="empty">수신 대상이 없습니다.</td></tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+    </form>
+  </section>
+
+  <aside class="stack">
+    <section class="card card-pad">
+      <h2 class="section-title">실제 발송 문구 예시</h2>
+      <div class="message-preview">{% if preview_recipient %}{{ preview_recipient.body }}{% else %}{{ batch.template_body }}{% endif %}</div>
+    </section>
+
+    <section class="card card-pad">
+      <div class="stack">
+        {% if can_edit_selection %}
+        <form method="post">{% csrf_token %}<input type="hidden" name="action" value="confirm">
+          <button class="button primary large full" data-confirm="선택한 대상에게 발송닷컴으로 접수할까요?">
+            {% if batch.scheduled_at %}예약 접수{% else %}최종 발송{% endif %}
+          </button>
+        </form>
+        {% endif %}
+
+        {% if can_sync %}
+        <form method="post">{% csrf_token %}<input type="hidden" name="action" value="sync_results">
+          <button class="button full">발송결과 다시 확인</button>
+        </form>
+        {% endif %}
+
+        {% if can_cancel %}
+        <form method="post">{% csrf_token %}<input type="hidden" name="action" value="cancel">
+          <button class="button danger full" data-confirm="발송닷컴 예약을 취소할까요?">예약 취소</button>
+        </form>
+        {% endif %}
+
+        {% if has_failed %}
+        <form method="post">{% csrf_token %}<input type="hidden" name="action" value="retry_failed">
+          <button class="button full" data-confirm="실패한 대상만 다시 발송할까요?">실패 건 재발송</button>
+        </form>
+        {% endif %}
+      </div>
+    </section>
+  </aside>
+</div>
+{% endblock %}
