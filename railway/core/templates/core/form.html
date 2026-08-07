@@ -1,0 +1,13 @@
+{% extends 'core/base.html' %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<div class="form-shell">
+  <div class="page-head"><div class="page-title"><a class="back-link" href="javascript:history.back()">← 돌아가기</a><h1>{{ title }}</h1>{% if subtitle %}<p>{{ subtitle }}</p>{% endif %}</div></div>
+  <section class="card form-card">
+    <form method="post" enctype="multipart/form-data">{% csrf_token %}
+      {{ form.as_p }}
+      <div class="form-actions"><button class="button" type="button" onclick="history.back()">취소</button><button class="button primary" type="submit">저장</button></div>
+    </form>
+  </section>
+</div>
+{% endblock %}

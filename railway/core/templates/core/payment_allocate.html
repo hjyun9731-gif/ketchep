@@ -1,0 +1,35 @@
+{% extends 'core/base.html' %}{% load core_extras %}
+{% block title %}입금 확인{% endblock %}
+{% block content %}
+<div class="form-shell" style="max-width:960px">
+  <div class="page-head">
+    <div class="page-title"><a class="back-link" href="{% url 'core:bank_transaction_list' %}">← 입금 처리내역</a><h1>입금 확인</h1><p>추천 회원이 맞는지 확인한 뒤 저장하세요. 미수금·통장·입금전표에 함께 반영됩니다.</p></div>
+  </div>
+  <section class="card form-card">
+    <div class="source-summary">
+      <div><span>입금일시</span><strong>{{ payment.payment_date|date:'Y-m-d H:i' }}</strong></div>
+      <div><span>입금자 원문</span><strong>{% if payment.bank_transaction %}{{ payment.bank_transaction.payer_text }}{% elif payment.card_transaction %}{{ payment.card_transaction.member_name }}{% else %}-{% endif %}</strong></div>
+      <div><span>원 입금액</span><strong>{{ payment.amount|money }}원</strong></div>
+      <div><span>현재 미배정</span><strong>{{ payment.unallocated_amount|money }}원</strong></div>
+    </div>
+    {% if payment.bank_transaction and payment.bank_transaction.match_reason %}<div class="alert warning">추천 근거: {{ payment.bank_transaction.match_reason }}</div>{% endif %}
+    <form method="post">{% csrf_token %}{{ formset.management_form }}
+      {% for form in formset %}
+      <div class="allocation-row">
+        {{ form.id }}
+        <div>{{ form.member.label_tag }}{{ form.member }}{{ form.member.errors }}</div>
+        <div>{{ form.account_type.label_tag }}{{ form.account_type }}{{ form.account_type.errors }}</div>
+        <div>{{ form.amount.label_tag }}{{ form.amount }}{{ form.amount.errors }}</div>
+        <div>{{ form.memo.label_tag }}{{ form.memo }}</div>
+        {% if form.DELETE %}<div>{{ form.DELETE.label_tag }}{{ form.DELETE }}</div>{% endif %}
+      </div>
+      {% endfor %}
+      {% if payment.bank_transaction %}
+      <label class="alias-option"><input type="checkbox" name="save_payer_alias" value="1"><span><strong>앞으로 같은 입금자명을 자동매칭</strong><br>이 계좌에서 `{{ payment.bank_transaction.payer_text }}`가 다시 들어오면 이번에 선택한 회원에게 자동 반영합니다. 여러 사람의 돈을 대신 내는 입금자라면 체크하지 마세요.</span></label>
+      {% endif %}
+      {% if formset.non_form_errors %}<div class="alert error">{{ formset.non_form_errors }}</div>{% endif %}
+      <div class="form-actions"><a class="button" href="{% url 'core:bank_transaction_list' %}">취소</a><button class="button primary" type="submit">확정하고 반영</button></div>
+    </form>
+  </section>
+</div>
+{% endblock %}

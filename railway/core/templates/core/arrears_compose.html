@@ -1,0 +1,60 @@
+{% extends 'core/base.html' %}{% load core_extras %}
+{% block title %}미수금 문자 보내기{% endblock %}
+{% block content %}
+<div class="page-head"><div class="page-title"><a class="back-link" href="{% url 'core:message_list' %}">← 문자발송</a><h1>미수금 문자 보내기</h1><p>보낼 사람을 고르고 납부기한과 발송 시점만 정하세요. 다음 화면에서 최종 문구를 확인합니다.</p></div></div>
+<form method="post" id="sms-compose-form">{% csrf_token %}
+<div class="sms-grid">
+  <section class="card sms-recipient-card">
+    <div class="card-head"><div><h2>1. 보낼 사람 선택</h2><p>연락처 없음·결번·수신거부 대상은 자동 제외됩니다.</p></div><span class="badge"><span id="selected-count">0</span>명 선택</span></div>
+    <div class="filter-bar" style="border-top:0">
+      <input class="search" form="recipient-search-form" name="q" value="{{ q }}" placeholder="이름·차량번호·전화번호 검색">
+      <select form="recipient-search-form" name="operational"><option value="">현재·폐업 전체</option>{% for value,label in operational_choices %}<option value="{{ value }}" {% if operational == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select>
+      <button class="button" form="recipient-search-form" type="submit">찾기</button>
+      <details class="filter-details"><summary>추가 조건</summary><div class="filter-popover"><div class="filter-grid"><label><span>연락처 조건</span><select form="recipient-search-form" name="contact"><option value="">전체</option><option value="can_sms" {% if contact == 'can_sms' %}selected{% endif %}>문자 가능한 사람</option><option value="missing_phone" {% if contact == 'missing_phone' %}selected{% endif %}>번호 없음·결번</option><option value="opt_out" {% if contact == 'opt_out' %}selected{% endif %}>수신거부</option><option value="address" {% if contact == 'address' %}selected{% endif %}>주소 확인 필요</option><option value="not_sent" {% if contact == 'not_sent' %}selected{% endif %}>성공 발송 이력 없음</option></select></label><label><span>연락 상태</span><select form="recipient-search-form" name="collection"><option value="">전체</option>{% for value,label in collection_choices %}<option value="{{ value }}" {% if collection == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label></div><div class="actions"><button class="button primary" form="recipient-search-form" type="submit">적용</button></div></div></details>
+    </div>
+    <div class="recipient-toolbar"><label><input type="checkbox" id="check-all" checked> 보낼 수 있는 사람 전체 선택</label><span>검색 결과 {{ candidates|length }}명</span></div>
+    <div class="recipient-list">
+      {% for m in candidates %}
+      <label class="recipient-row {% if not m.can_receive_sms %}disabled{% endif %}">
+        <input class="target-check" type="checkbox" name="member_ids" value="{{ m.pk }}" {% if m.can_receive_sms %}checked{% else %}disabled{% endif %}>
+        <span class="recipient-person"><strong>{{ m.name }}</strong><small>{% if m.current_vehicle_no %}{{ m.current_vehicle_no }}{% else %}차량번호 없음{% endif %} · {{ m.phone|default:'전화번호 없음' }}</small></span>
+        <span class="recipient-status">{{ m.get_operational_status_display }}</span>
+        <strong class="recipient-amount">{{ m.outstanding_amount|money }}원</strong>
+        {% if m.can_receive_sms %}<span class="sendable">발송 가능</span>{% else %}<span class="not-sendable">{% if m.sms_opt_out %}수신거부{% elif m.phone_needs_check %}결번{% else %}번호 없음{% endif %}</span>{% endif %}
+      </label>
+      {% empty %}<div class="empty"><strong>조건에 맞는 미수금 대상자가 없습니다.</strong></div>{% endfor %}
+    </div>
+  </section>
+
+  <aside class="card sms-settings">
+    <h2>2. 발송 설정</h2><p>버튼을 눌러도 바로 발송되지 않습니다.</p>
+    <div class="setting-field"><label class="field-label" for="{{ form.due_date.id_for_label }}">납부기한</label>{{ form.due_date }}{% for error in form.due_date.errors %}<div class="errorlist">{{ error }}</div>{% endfor %}</div>
+    <div class="setting-field"><span class="field-label">보내는 시점</span><div class="send-mode"><label><input type="radio" name="send_mode_ui" value="now" checked><span><b>지금</b><small>확인 후 바로 발송</small></span></label><label><input type="radio" name="send_mode_ui" value="schedule"><span><b>예약</b><small>날짜와 시간 지정</small></span></label></div></div>
+    <div class="setting-field" id="schedule-field" hidden><label class="field-label" for="{{ form.scheduled_at.id_for_label }}">예약일시</label>{{ form.scheduled_at }}{% for error in form.scheduled_at.errors %}<div class="errorlist">{{ error }}</div>{% endfor %}</div>
+    {% if form.non_field_errors %}<div class="alert error">{{ form.non_field_errors }}</div>{% endif %}
+    <div class="side-summary"><span>선택한 대상</span><strong><span id="selected-count-side">0</span>명</strong></div>
+    <button class="button primary large full" type="submit">문자 내용 확인</button>
+    <p class="side-help">다음 화면에서 수신자와 문구를 다시 확인합니다.</p>
+  </aside>
+</div>
+</form>
+<form id="recipient-search-form" method="get"></form>
+{% endblock %}
+{% block scripts %}
+<script>
+(function(){
+  const checks=[...document.querySelectorAll('.target-check:not(:disabled)')];
+  const all=document.getElementById('check-all');
+  const a=document.getElementById('selected-count');
+  const b=document.getElementById('selected-count-side');
+  const schedule=document.getElementById('schedule-field');
+  const scheduledInput=document.getElementById('{{ form.scheduled_at.id_for_label }}');
+  function update(){const n=checks.filter(x=>x.checked).length;a.textContent=n;b.textContent=n;if(all)all.checked=checks.length>0&&n===checks.length;}
+  if(all)all.addEventListener('change',()=>{checks.forEach(x=>x.checked=all.checked);update();});
+  checks.forEach(x=>x.addEventListener('change',update));
+  document.querySelectorAll('input[name="send_mode_ui"]').forEach(r=>r.addEventListener('change',()=>{const reserve=document.querySelector('input[name="send_mode_ui"]:checked').value==='schedule';schedule.hidden=!reserve;if(!reserve&&scheduledInput)scheduledInput.value='';}));
+  if(scheduledInput&&scheduledInput.value){document.querySelector('input[value="schedule"]').checked=true;schedule.hidden=false;}
+  update();
+})();
+</script>
+{% endblock %}

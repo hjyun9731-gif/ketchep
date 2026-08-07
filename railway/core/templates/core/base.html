@@ -1,0 +1,66 @@
+{% load static core_extras %}
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#ffffff">
+  <title>{% block title %}강원 화물협회 업무{% endblock %}</title>
+  <link rel="stylesheet" href="{% static 'core/app.css' %}">
+</head>
+<body class="{% block body_class %}{% endblock %}">
+{% if request.user.is_authenticated %}
+<header class="app-header">
+  <div class="header-inner">
+    <a class="brand" href="{% url 'core:dashboard' %}">
+      <span class="brand-mark">강</span>
+      <span class="brand-copy"><strong>강원 화물협회</strong><span>입금·미수금 업무</span></span>
+    </a>
+    <nav class="primary-nav" aria-label="주 메뉴">
+      <a class="{% if request.resolver_match.url_name == 'dashboard' or request.resolver_match.url_name == 'bank_transaction_list' or request.resolver_match.url_name == 'payment_allocate' %}active{% endif %}" href="{% url 'core:dashboard' %}">입금대조</a>
+      <a class="{% if request.resolver_match.url_name == 'member_list' or request.resolver_match.url_name == 'member_detail' or request.resolver_match.url_name == 'member_create' or request.resolver_match.url_name == 'member_edit' or request.resolver_match.url_name == 'closed_member_list' %}active{% endif %}" href="{% url 'core:member_list' %}">명단</a>
+      <a class="{% if request.resolver_match.url_name == 'card_transaction_list' %}active{% endif %}" href="{% url 'core:card_transaction_list' %}">카드결제</a>
+      <a class="{% if request.resolver_match.url_name == 'charge_list' %}active{% endif %}" href="{% url 'core:charge_list' %}">미수금</a>
+      <a class="{% if request.resolver_match.url_name == 'message_list' or request.resolver_match.url_name == 'arrears_compose' or request.resolver_match.url_name == 'refund_message_compose' or request.resolver_match.url_name == 'message_batch_detail' %}active{% endif %}" href="{% url 'core:message_list' %}">문자</a>
+    </nav>
+    <div class="header-actions">
+      <details class="header-menu">
+        <summary><span class="label">관리</span><span>▾</span></summary>
+        <div class="menu-panel">
+          <a href="{% url 'core:initial_data_import' %}">기존 자료 불러오기</a>
+          <a href="{% url 'core:refund_list' %}">환불관리</a>
+          <a href="{% url 'core:legal_notice_list' %}">내용증명</a>
+          <a href="{% url 'core:audit_list' %}">변경이력</a>
+          <div class="menu-separator"></div>
+          <form class="logout-form" action="{% url 'logout' %}" method="post">{% csrf_token %}<button type="submit">로그아웃</button></form>
+        </div>
+      </details>
+    </div>
+  </div>
+</header>
+<main class="app-main">
+  {% if messages %}<div class="messages">{% for message in messages %}<div class="alert {{ message.tags|default:'info' }}">{{ message }}</div>{% endfor %}</div>{% endif %}
+  {% block content %}{% endblock %}
+</main>
+{% else %}<main>{% block public_content %}{% endblock %}</main>{% endif %}
+<script>
+  document.querySelectorAll('[data-confirm]').forEach(function (node) {
+    node.addEventListener('click', function (event) {
+      if (!window.confirm(node.dataset.confirm)) event.preventDefault();
+    });
+  });
+  document.querySelectorAll('[data-paste-form], [data-upload-form]').forEach(function (form) {
+    form.addEventListener('submit', function () {
+      const button = form.querySelector('button[type="submit"]');
+      if (button) { button.disabled = true; button.textContent = '처리 중…'; }
+    });
+  });
+  document.addEventListener('click', function(e){
+    document.querySelectorAll('.header-menu[open]').forEach(function(menu){
+      if(!menu.contains(e.target)) menu.removeAttribute('open');
+    });
+  });
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

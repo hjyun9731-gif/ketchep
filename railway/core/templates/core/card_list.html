@@ -1,0 +1,25 @@
+{% extends 'core/base.html' %}{% load core_extras %}
+{% block title %}카드결제{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div class="page-title"><h1>카드결제</h1><p>알토란과 사이다페이에서 내려받은 엑셀을 그대로 올리면 차량번호로 자동 대조합니다.</p></div>
+</div>
+
+<div class="upload-grid">
+  <form class="upload-card" method="post" enctype="multipart/form-data" action="{% url 'core:card_upload' 'altolan' %}" data-upload-form>
+    {% csrf_token %}<span class="provider-tag">알토란</span><h2>알토란 엑셀 올리기</h2><p>다운로드한 파일을 수정하지 말고 그대로 선택하세요.</p>{{ altolan_form.file }}<button class="button primary full" type="submit">알토란 반영</button>
+  </form>
+  <form class="upload-card" method="post" enctype="multipart/form-data" action="{% url 'core:card_upload' 'cider' %}" data-upload-form>
+    {% csrf_token %}<span class="provider-tag">사이다페이</span><h2>사이다페이 엑셀 올리기</h2><p>승인번호와 차량번호를 읽어 중복 없이 반영합니다.</p>{{ cider_form.file }}<button class="button primary full" type="submit">사이다페이 반영</button>
+  </form>
+</div>
+
+<section class="card">
+  <div class="card-head"><div><h2>카드 결제내역</h2><p>회원에게는 총결제액을 반영하고 수수료와 정산액은 별도로 관리합니다.</p></div></div>
+  <form method="get" class="filter-bar"><input class="search" name="q" value="{{ q }}" placeholder="이름, 차량번호 또는 승인번호"><button class="button" type="submit">검색</button></form>
+  <div class="table-wrap"><table><thead><tr><th>업체</th><th>결제일</th><th>이름</th><th>차량번호</th><th class="right">결제액</th><th class="right">수수료</th><th>상태</th><th></th></tr></thead><tbody>
+  {% for tx in transactions %}<tr><td><span class="account-pill">{{ tx.get_provider_display }}</span></td><td>{{ tx.transaction_at|date:'Y-m-d H:i'|default:'-' }}</td><td>{{ tx.member_name|default:'-' }}</td><td><strong>{{ tx.vehicle_no|default:'-' }}</strong></td><td class="right money">{{ tx.gross_amount|money }}원</td><td class="right">{{ tx.fee_amount|money }}원</td><td><span class="badge {{ tx.status|status_class }}">{{ tx.get_status_display }}</span></td><td class="table-actions">{% if tx.payment %}<a class="button small {% if tx.status == 'review' or tx.status == 'unmatched' %}primary{% endif %}" href="{% url 'core:payment_allocate' tx.payment.pk %}">확인</a>{% endif %}</td></tr>
+  {% empty %}<tr><td colspan="8" class="empty">아직 올린 카드 결제내역이 없습니다.</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+{% endblock %}

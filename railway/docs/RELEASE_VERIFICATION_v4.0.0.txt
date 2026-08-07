@@ -1,0 +1,20 @@
+v4.0.0 RELEASE VERIFICATION
+
+Source workbook verification
+- 개인 가입일 값: 1024건
+- 개인 자격증명 발급일 값: 1401건
+- 택배 가입일 값: 209건
+- 택배 자격증명 발급일 값: 2205건
+- 이종일 원본: 관리번호 양14-129, 가입일 18.10.24., 자격증명 발급일 18.10.24.
+
+Release checks
+- Python compileall: PASS
+- 수정/입금/폐업/양도 팝업 템플릿 존재: PASS
+- 명단 행의 4개 팝업 연결: PASS
+- 관리번호 우선 날짜 복구 명령 포함: PASS
+- 50명 페이지 조회 후 페이지 회원만 차량/미수금 집계: PASS
+- 발송닷컴 API 코드 및 기존 기능 보존: PASS
+
+Environment limitation
+- 이 컨테이너에는 Django 패키지 wheel이 없어 Django test client 및 실제 HTTP 서버 실행은 수행하지 못함.
+- Railway 배포 후 startup log의 `회원 원본복구 완료`와 실제 화면을 확인해야 함.

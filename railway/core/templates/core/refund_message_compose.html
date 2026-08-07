@@ -1,0 +1,23 @@
+{% extends 'core/base.html' %}{% load core_extras %}
+{% block title %}환불 문자 보내기{% endblock %}
+{% block content %}
+<div class="page-head"><div class="page-title"><a class="back-link" href="{% url 'core:message_list' %}">← 문자발송</a><h1>환불 문자 보내기</h1><p>문자 종류와 발송 시점을 정하고 환불 대상자를 선택하세요.</p></div></div>
+<form method="post">{% csrf_token %}
+<div class="sms-grid">
+  <section class="card sms-recipient-card">
+    <div class="card-head"><div><h2>1. 환불 대상 선택</h2><p>환불대기 또는 환불완료 내역 중 보낼 대상을 고릅니다.</p></div></div>
+    <div class="recipient-toolbar"><label><input type="checkbox" id="refund-check-all"> 전체 선택</label><span>{{ refunds|length }}건</span></div>
+    <div class="table-wrap"><table><thead><tr><th>선택</th><th>회원</th><th>상태</th><th class="right">금액</th><th>환불일</th><th>전화번호</th></tr></thead><tbody>
+      {% for r in refunds %}<tr><td><input class="refund-check" type="checkbox" name="refund_ids" value="{{ r.pk }}"></td><td><strong>{{ r.member.name }}</strong></td><td><span class="badge {{ r.status|status_class }}">{{ r.get_status_display }}</span></td><td class="right money">{{ r.amount|money }}원</td><td>{{ r.refund_date|date:'Y-m-d'|default:'-' }}</td><td>{{ r.member.phone|default:'-' }}</td></tr>
+      {% empty %}<tr><td colspan="6" class="empty">환불 내역이 없습니다.</td></tr>{% endfor %}
+    </tbody></table></div>
+  </section>
+  <aside class="card sms-settings">
+    <h2>2. 발송 설정</h2><p>선택한 대상의 이름과 환불금액이 문구에 자동으로 들어갑니다.</p>
+    {% for field in form %}<div class="setting-field"><label class="field-label" for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% if field.help_text %}<div class="small-text">{{ field.help_text }}</div>{% endif %}{{ field.errors }}</div>{% endfor %}
+    <button class="button primary large full" type="submit">문자 내용 확인</button><p class="side-help">다음 화면에서 문구와 수신자를 다시 확인합니다.</p>
+  </aside>
+</div>
+</form>
+{% endblock %}
+{% block scripts %}<script>(function(){const all=document.getElementById('refund-check-all');const checks=[...document.querySelectorAll('.refund-check')];if(all)all.addEventListener('change',()=>checks.forEach(x=>x.checked=all.checked));})();</script>{% endblock %}
