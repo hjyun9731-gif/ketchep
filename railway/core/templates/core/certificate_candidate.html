@@ -1,0 +1,22 @@
+{% extends 'core/base.html' %}{% load core_extras %}
+{% block title %}신규 자격증명 입금{% endblock %}
+{% block content %}
+<div class="form-shell" style="max-width:900px">
+  <div class="page-head"><div class="page-title"><a class="back-link" href="{% url 'core:payment_allocate' payment.pk %}">← 입금 확인</a><h1>신규 자격증명 입금 처리</h1><p>종이 신청서를 보면서 필요한 값만 입력합니다. 처리 후 협회관리시스템 예정자 등록 필요로 표시됩니다.</p></div></div>
+  <section class="card form-card">
+    <div class="source-summary"><div><span>입금자 원문</span><strong>{{ payer|default:'-' }}</strong></div><div><span>입금액</span><strong>{{ payment.amount|money }}원</strong></div><div><span>추출 끝번호</span><strong>{{ digits_hint|default:'-' }}</strong></div></div>
+    <div class="alert info">배 비회원 30,000원 · 비배 비회원 50,000원. 배 차량이 50,000원을 낸 경우 30,000원 발급비 + 20,000원 관리비 선납으로 자동 분리합니다.</div>
+    <form method="post">{% csrf_token %}
+      {% if form.non_field_errors %}<div class="alert error">{{ form.non_field_errors }}</div>{% endif %}
+      <div class="modal-form-grid cols-2">
+        <div class="field">{{ form.name.label_tag }}{{ form.name }}{{ form.name.errors }}</div>
+        <div class="field">{{ form.region.label_tag }}{{ form.region }}{{ form.region.errors }}</div>
+        <div class="field">{{ form.vehicle_no.label_tag }}{{ form.vehicle_no }}{{ form.vehicle_no.errors }}</div>
+        <div class="field">{{ form.membership_intent.label_tag }}{{ form.membership_intent }}{{ form.membership_intent.errors }}</div>
+        <div class="field span-all">{{ form.memo.label_tag }}{{ form.memo }}{{ form.memo.errors }}</div>
+      </div>
+      <div class="form-actions"><a class="button" href="{% url 'core:payment_allocate' payment.pk %}">취소</a><button class="button primary" type="submit">확정하고 반영</button></div>
+    </form>
+  </section>
+</div>
+{% endblock %}

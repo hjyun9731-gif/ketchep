@@ -19,7 +19,7 @@ class Command(BaseCommand):
                         column.name
                         for column in connection.introspection.get_table_description(cursor, member_table)
                     }
-                for field_name in ('receivable_account_type', 'management_no'):
+                for field_name in ('receivable_account_type', 'management_no', 'association_system_registration_needed'):
                     field = Member._meta.get_field(field_name)
                     if field.column not in columns:
                         schema_editor.add_field(Member, field)
@@ -44,6 +44,10 @@ class Command(BaseCommand):
             ('idx_vehicle_member_current', 'core_vehicle', ['member_id', 'is_current', 'id']),
             ('idx_charge_member_status_job', 'core_charge', ['member_id', 'status', 'monthly_job_id']),
             ('idx_settlement_charge_active', 'core_chargesettlement', ['charge_id', 'is_active']),
+            ('idx_paymentline_member_status', 'core_paymentallocationline', ['member_id', 'status', 'payment_id']),
+            ('idx_prepayment_member_balance', 'core_prepayment', ['member_id', 'balance']),
+            ('idx_bank_job_effective_source', 'core_banktransaction', ['job_id', 'is_effective', 'source_sheet']),
+            ('idx_card_provider_key_effective', 'core_cardtransaction', ['provider', 'txn_key', 'is_effective']),
         ]
         with connection.cursor() as cursor:
             for index_name, table_name, columns in indexes:

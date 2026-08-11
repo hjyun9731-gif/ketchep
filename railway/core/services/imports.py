@@ -12,7 +12,7 @@ from django.utils import timezone
 
 from core.models import (
     AccountType, BankTransaction, CardTransaction, Charge, ClosureEvent, ImportIssue, Member,
-    MonthlyJob, ParsedRow, Payment, UploadedFile, Vehicle,
+    MonthlyJob, ParsedRow, Payment, PaymentAllocationLine, UploadedFile, Vehicle,
 )
 from core.services.audit import log_action
 from core.utils import (
@@ -90,7 +90,7 @@ REQUIRED_FIELDS = {
     UploadedFile.SlotType.BANK_2: {'payer_text', 'amount'},
     UploadedFile.SlotType.BANK_3: {'payer_text', 'amount'},
     UploadedFile.SlotType.ALTOLAN: {'vehicle_no', 'gross'},
-    UploadedFile.SlotType.CIDER: {'gross'},
+    UploadedFile.SlotType.CIDER: {'vehicle_no', 'gross'},
     UploadedFile.SlotType.RECEIVABLES: {'name', 'balance'},
 }
 
@@ -715,38 +715,84 @@ def process_card_file(uploaded: UploadedFile):
 
     job = uploaded.job
     provider = CardTransaction.Provider.ALTOLAN if uploaded.slot_type == UploadedFile.SlotType.ALTOLAN else CardTransaction.Provider.CIDER
-    created = skipped = duplicates = changed_count = 0
+    created = skipped = duplicates = changed_count = cancelled = 0
     seen_keys = set()
+
+    def build_key(*, source_id, transaction_at, vehicle_no, name, gross):
+        if provider == CardTransaction.Provider.CIDER and source_id:
+            return f'cider:{source_id}'
+        if provider == CardTransaction.Provider.ALTOLAN and source_id:
+            return f'altolan:{source_id}'
+        return stable_hash({
+            'provider': provider, 'dt': str(transaction_at or ''),
+            'vehicle': normalize_vehicle_no(vehicle_no), 'name': normalize_text(name),
+            'gross': str(gross or ''),
+        })
+
+    def reverse_cancelled_transaction(tx, raw_data):
+        nonlocal cancelled
+        payment = getattr(tx, 'payment', None)
+        if payment:
+            if payment.allocation_lines.filter(status=PaymentAllocationLine.Status.ACTIVE).exists():
+                replace_payment_allocations(payment, [], reason='카드 결제취소 자동 원상복구')
+            payment.status = Payment.Status.CANCELLED
+            payment.is_effective = False
+            payment.save(update_fields=['status', 'is_effective', 'updated_at'])
+        tx.status = CardTransaction.Status.CANCELLED
+        tx.is_effective = False
+        tx.raw_data = raw_data
+        tx.save(update_fields=['status', 'is_effective', 'raw_data', 'updated_at'])
+        cancelled += 1
+
     for row in uploaded.parsed_rows.all():
         payment_status = normalize_text(_mapped_value(row, uploaded, 'payment_status'))
-        if any(token in payment_status for token in ('결제취소', '취소완료', '승인취소')):
+        gross = parse_decimal(_mapped_value(row, uploaded, 'gross'))
+        net = parse_decimal(_mapped_value(row, uploaded, 'net'))
+        fee_raw = parse_decimal(_mapped_value(row, uploaded, 'fee'))
+        transaction_at = parse_datetime(_mapped_value(row, uploaded, 'transaction_at'), default_year=job.year)
+        settlement_date = parse_date(_mapped_value(row, uploaded, 'settlement_date'), default_year=job.year)
+        vehicle_no = str(_mapped_value(row, uploaded, 'vehicle_no') or '').strip()
+        name = str(_mapped_value(row, uploaded, 'name') or '').strip()
+        source_id = str(_mapped_value(row, uploaded, 'transaction_id') or '').strip()
+        txn_key = build_key(
+            source_id=source_id, transaction_at=transaction_at,
+            vehicle_no=vehicle_no, name=name, gross=gross,
+        )
+
+        is_cancelled = any(token in payment_status for token in ('결제취소', '취소완료', '승인취소', '취소'))
+        if is_cancelled:
+            targets = list(
+                CardTransaction.objects.filter(provider=provider, txn_key=txn_key, is_effective=True)
+                .select_related('payment')
+            )
+            for target in targets:
+                reverse_cancelled_transaction(target, row.raw_data)
+            # Keep a visible cancellation row even when the original approval was not imported.
+            if not targets:
+                CardTransaction.objects.get_or_create(
+                    uploaded_file=uploaded, source_sheet=row.sheet_name, source_row=row.source_row,
+                    defaults={
+                        'job': job, 'provider': provider, 'txn_key': txn_key,
+                        'transaction_at': transaction_at, 'vehicle_no': vehicle_no, 'member_name': name,
+                        'gross_amount': gross or Decimal('0'), 'fee_amount': Decimal('0'),
+                        'net_amount': Decimal('0'), 'settlement_date': settlement_date,
+                        'raw_data': row.raw_data, 'status': CardTransaction.Status.CANCELLED,
+                        'is_effective': False,
+                    },
+                )
             skipped += 1
             continue
-        gross = parse_decimal(_mapped_value(row, uploaded, 'gross'))
+
         if gross is None or gross <= 0:
             skipped += 1
             continue
-        net = parse_decimal(_mapped_value(row, uploaded, 'net'))
-        fee_raw = parse_decimal(_mapped_value(row, uploaded, 'fee'))
         if fee_raw is None and net is not None:
             fee = max(Decimal('0'), gross - net)
         else:
             fee = fee_raw or Decimal('0')
         if net is None:
             net = gross - fee
-        transaction_at = parse_datetime(_mapped_value(row, uploaded, 'transaction_at'), default_year=job.year)
-        settlement_date = parse_date(_mapped_value(row, uploaded, 'settlement_date'), default_year=job.year)
-        vehicle_no = str(_mapped_value(row, uploaded, 'vehicle_no') or '').strip()
-        name = str(_mapped_value(row, uploaded, 'name') or '').strip()
-        source_id = str(_mapped_value(row, uploaded, 'transaction_id') or '').strip()
-        if provider == CardTransaction.Provider.CIDER and source_id:
-            txn_key = f'cider:{source_id}'
-        else:
-            txn_key = stable_hash({
-                'provider': provider, 'dt': str(transaction_at or ''),
-                'vehicle': normalize_vehicle_no(vehicle_no), 'name': normalize_text(name),
-                'gross': str(gross),
-            })
+
         tx, was_created = CardTransaction.objects.get_or_create(
             uploaded_file=uploaded, source_sheet=row.sheet_name, source_row=row.source_row,
             defaults={
@@ -754,6 +800,7 @@ def process_card_file(uploaded: UploadedFile):
                 'transaction_at': transaction_at, 'vehicle_no': vehicle_no, 'member_name': name,
                 'gross_amount': gross, 'fee_amount': fee, 'net_amount': net,
                 'settlement_date': settlement_date, 'raw_data': row.raw_data,
+                'is_effective': True,
             },
         )
         changed = False
@@ -762,7 +809,7 @@ def process_card_file(uploaded: UploadedFile):
                 tx.txn_key != txn_key, tx.transaction_at != transaction_at,
                 tx.vehicle_no != vehicle_no, tx.member_name != name,
                 tx.gross_amount != gross, tx.fee_amount != fee, tx.net_amount != net,
-                tx.settlement_date != settlement_date,
+                tx.settlement_date != settlement_date, not tx.is_effective,
             ])
             tx.txn_key = txn_key
             tx.transaction_at = transaction_at
@@ -773,6 +820,7 @@ def process_card_file(uploaded: UploadedFile):
             tx.net_amount = net
             tx.settlement_date = settlement_date
             tx.raw_data = row.raw_data
+            tx.is_effective = True
             if changed:
                 tx.status = CardTransaction.Status.REVIEW
                 changed_count += 1
@@ -780,7 +828,7 @@ def process_card_file(uploaded: UploadedFile):
 
         duplicate = (
             txn_key in seen_keys
-            or CardTransaction.objects.filter(job=job, provider=provider, txn_key=txn_key)
+            or CardTransaction.objects.filter(job=job, provider=provider, txn_key=txn_key, is_effective=True)
                 .exclude(pk=tx.pk).exists()
         )
         seen_keys.add(txn_key)
@@ -794,7 +842,7 @@ def process_card_file(uploaded: UploadedFile):
             tx.save(update_fields=['status', 'duplicate_suspected', 'updated_at'])
 
         if not hasattr(tx, 'payment'):
-            payment = Payment.objects.create(
+            Payment.objects.create(
                 source_type=Payment.SourceType.CARD,
                 payment_date=transaction_at or timezone.now(),
                 amount=gross,
@@ -805,8 +853,11 @@ def process_card_file(uploaded: UploadedFile):
             payment = tx.payment
             payment.payment_date = transaction_at or payment.payment_date
             payment.amount = gross
-            payment.save(update_fields=['payment_date', 'amount', 'updated_at'])
-            if changed and payment.allocation_lines.filter(status='active').exists():
+            payment.is_effective = True
+            if payment.status == Payment.Status.CANCELLED:
+                payment.status = Payment.Status.OPEN
+            payment.save(update_fields=['payment_date', 'amount', 'is_effective', 'status', 'updated_at'])
+            if changed and payment.allocation_lines.filter(status=PaymentAllocationLine.Status.ACTIVE).exists():
                 replace_payment_allocations(payment, [], reason='원본 카드거래 변경으로 자동 원상복구')
         duplicates += int(duplicate)
         created += int(was_created)
@@ -814,12 +865,12 @@ def process_card_file(uploaded: UploadedFile):
     uploaded.parse_status = UploadedFile.ParseStatus.PROCESSED
     uploaded.parse_summary = {
         **(uploaded.parse_summary or {}), 'created_transactions': created,
-        'changed_transactions': changed_count, 'duplicates': duplicates, 'skipped': skipped,
+        'changed_transactions': changed_count, 'duplicates': duplicates,
+        'cancelled_transactions': cancelled, 'skipped': skipped,
     }
     uploaded.save(update_fields=['parse_status', 'parse_summary', 'updated_at'])
     log_action(action='process_card_file', instance=uploaded, after=uploaded.parse_summary)
     return uploaded.parse_summary
-
 
 def _account_type_from_value(value):
     normalized = normalize_text(value)

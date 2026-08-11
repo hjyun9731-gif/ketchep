@@ -1,0 +1,34 @@
+v4.4.0 통합 안정화 검증 기록
+================================
+
+정적 검증
+- Python 전체 py_compile: PASS
+- HTML 템플릿 28개 URL 참조 -> core URL 49개 대조: 누락 0
+- 커스텀 템플릿 필터 core_extras load 누락: 0
+- 인라인 JavaScript 5개 node --check: PASS
+- 발송닷컴 실제 계정 ID/PW가 소스/ZIP에 포함되지 않았는지 검사: PASS
+
+핵심 회귀 확인
+- 입금대조 초기화 대상: 현재월 농협 붙여넣기(source_sheet=붙여넣기, *_붙여넣기.tsv)만 제한
+- 초기화 전 거래건수/배정건수 화면 표시
+- 현재잔액 signed balance: 미수 양수 / 완납 0 / 선납 음수
+- 미수금/완성본도 signed balance 사용
+- 회원검색의 잘못된 AccountType.ASSOCIATION_DUE 참조 제거
+- 신규 30,000/50,000원 자격증명 후보 처리 경로 존재
+- 카드 후속 취소 파일 -> 기존 활성 배정 원상복구 경로 존재
+- 2026년 1~7월 과거이력 + 8월 이후 프로그램 처리이력 연결
+
+실제 업로드 알토란 원본 확인
+파일: 07.09(2).xlsx
+헤더: 연번, 처리결과, 분류, 고객조회번호, 거  래  처, 발송월일, 수납월일, 수납금액, 이체일, 이체금액, 수수료
+표본: 80배 1004 / 수납금액 60,000 / 이체금액 59,920 / 수수료 80
+위 실제 헤더가 v4.4.0 알토란 alias와 일치함을 확인.
+
+사이다페이
+- .xls 지원을 위해 requirements.txt에 xlrd>=2.0.1,<3 포함.
+- 코드와 회귀 fixture는 주문번호/완료일시/판매금액/정산일시/정산금액/구매자명/고객번호/결제상태 구조를 사용.
+- 현재 제작 컨테이너에는 xlrd와 Django가 설치되어 있지 않아 여기서는 실제 .xls/Django 런타임 실행은 수행하지 못함.
+
+배포 검증
+- Railway start.sh에서 migrate --run-syncdb, ensure_v2_schema, 데이터 보정 명령, collectstatic, validate_templates 실행 후 gunicorn 시작.
+- Django/Railway 실 DB 연결 HTTP 통합테스트는 이 제작 환경에서는 미실행.

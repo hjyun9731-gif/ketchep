@@ -4,7 +4,7 @@
 <div class="page-head member-summary">
   <div class="member-identity">
     <span class="member-avatar">{{ member.name|slice:':1' }}</span>
-    <div><a class="back-link" href="{% if member.operational_status == 'closed' %}{% url 'core:closed_member_list' %}{% else %}{% url 'core:member_list' %}{% endif %}">← 명단</a><h1>{{ member.name }} <span class="badge {{ member.operational_status|status_class }}">{{ member.get_operational_status_display }}</span></h1><p>{% if current_vehicle %}{{ current_vehicle.vehicle_no }}{% else %}차량번호 없음{% endif %} · {{ member.get_membership_status_display }} · 미수 {{ outstanding_amount|money }}원</p></div>
+    <div><a class="back-link" href="{% if member.operational_status == 'closed' %}{% url 'core:closed_member_list' %}{% else %}{% url 'core:member_list' %}{% endif %}">← 명단</a><h1>{{ member.name }} <span class="badge {{ member.operational_status|status_class }}">{{ member.get_operational_status_display }}</span></h1><p>{% if current_vehicle %}{{ current_vehicle.vehicle_no }}{% else %}차량번호 없음{% endif %} · {{ member.get_membership_status_display }} · 잔액 {{ net_balance|money }}원</p></div>
   </div>
   <div class="page-actions">
     <a class="button" href="{% url 'core:member_manual_payment' member.pk %}">수기입금</a><a class="button primary" href="{% url 'core:member_edit' member.pk %}">회원정보 수정</a>
@@ -48,7 +48,7 @@
 
   <aside class="stack">
     <section class="card card-pad">
-      <div class="balance-box"><span>현재 미수금</span><strong>{{ outstanding_amount|money }}원</strong></div>
+      <div class="balance-box"><span>현재 잔액</span><strong>{{ net_balance|money }}원</strong></div>
       <h3 style="margin:18px 0 6px;font-size:14px">선납금</h3>
       <ul class="mini-list">{% for p in prepayments %}<li><span>{{ p.get_account_type_display }}</span><strong>{{ p.balance|money }}원</strong></li>{% empty %}<li><span class="muted">선납금 없음</span></li>{% endfor %}</ul>
       <h3 style="margin:18px 0 6px;font-size:14px">환불</h3>

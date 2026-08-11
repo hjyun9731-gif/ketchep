@@ -71,17 +71,17 @@
             <th class="col-date">가입일</th>
             <th class="col-date">자격증명 발급일</th>
             <th class="col-address">주소</th>
-            <th class="col-money right">미수금</th>
+            <th class="col-money right">잔액</th>
             <th class="col-manage">관리</th>
           </tr>
         </thead>
         <tbody>
         {% for member in page_obj %}
           <tr>
-            <td class="mono management-no">{{ member.management_no|default:'-' }}</td>
+            <td class="mono management-no">{% if member.management_no and member.management_no != '0' %}{{ member.management_no }}{% else %}-{% endif %}</td>
             <td>{{ member.region|default:'-' }}</td>
             <td><a class="dense-link vehicle-link" href="{% url 'core:member_detail' member.pk %}">{{ member.current_vehicle_no|default:'-' }}</a></td>
-            <td><a class="dense-link name-link" href="{% url 'core:member_detail' member.pk %}">{{ member.name }}</a></td>
+            <td><a class="dense-link name-link payment-history-link" title="2026년 월별 입금내역 보기" href="{% url 'core:member_payment_history' member.pk %}" data-modal-url="{% url 'core:member_payment_history' member.pk %}">{{ member.name }}</a>{% if member.association_system_registration_needed %}<span class="mini-followup" title="협회관리시스템 예정자 등록 필요">예정자등록</span>{% endif %}</td>
             <td class="mono">{{ member.birth6|birth6_format|default:'-' }}</td>
             <td class="mono">{{ member.phone|phone_format|default:'-' }}</td>
             <td>
@@ -92,11 +92,11 @@
             <td class="mono membership-date-cell">{% if member.membership_started_on %}{{ member.membership_started_on|date:'y. n. j.' }}{% elif member.membership_status == 'active' %}<span class="unknown-date">가입일자 미상</span>{% else %}-{% endif %}</td>
             <td class="mono">{{ member.certificate_issued_on|date:'y. n. j.'|default:'-' }}</td>
             <td class="address-cell" title="{{ member.address }}">{{ member.address|default:'-' }}</td>
-            <td class="right money {% if member.outstanding_amount > 0 %}has-arrears{% else %}zero-arrears{% endif %}">{{ member.outstanding_amount|money }}원</td>
+            <td class="right money balance-cell">{% if member.net_balance > 0 %}<span class="has-arrears">{{ member.net_balance|money }}원</span>{% elif member.net_balance < 0 %}<span class="has-prepayment">{{ member.net_balance|money }}원</span>{% else %}<span class="zero-arrears">0원</span>{% endif %}</td>
             <td><div class="row-actions">
               <a class="mini-action edit" href="{% url 'core:member_edit' member.pk %}" data-modal-url="{% url 'core:member_edit' member.pk %}?modal=1">수정</a>
               <a class="mini-action payment" href="{% url 'core:member_manual_payment' member.pk %}" data-modal-url="{% url 'core:member_manual_payment' member.pk %}?modal=1">입금</a>
-              <a class="mini-action close" href="{% url 'core:member_close' member.pk %}" data-modal-url="{% url 'core:member_close' member.pk %}?modal=1">폐업·양도·이관</a>
+              <a class="mini-action close" href="{% url 'core:member_close' member.pk %}" data-modal-url="{% url 'core:member_close' member.pk %}?modal=1">폐업</a>
             </div></td>
           </tr>
         {% empty %}<tr><td colspan="12" class="empty">검색 결과가 없습니다.</td></tr>{% endfor %}
@@ -104,18 +104,18 @@
       </table>
       {% else %}
       <table class="member-dense-table closed-table">
-        <thead><tr><th>관리번호</th><th>지역</th><th>차량번호</th><th>성명</th><th>핸드폰</th><th>폐업일</th><th>주소</th><th class="right">남은 미수금</th><th>관리</th></tr></thead>
+        <thead><tr><th>관리번호</th><th>지역</th><th>차량번호</th><th>성명</th><th>핸드폰</th><th>폐업일</th><th>주소</th><th class="right">잔액</th><th>관리</th></tr></thead>
         <tbody>
         {% for member in page_obj %}
           <tr>
-            <td class="mono management-no">{{ member.management_no|default:'-' }}</td>
+            <td class="mono management-no">{% if member.management_no and member.management_no != '0' %}{{ member.management_no }}{% else %}-{% endif %}</td>
             <td>{{ member.region|default:'-' }}</td>
             <td><a class="dense-link vehicle-link" href="{% url 'core:member_detail' member.pk %}">{{ member.current_vehicle_no|default:'-' }}</a></td>
-            <td><a class="dense-link name-link" href="{% url 'core:member_detail' member.pk %}">{{ member.name }}</a></td>
+            <td><a class="dense-link name-link payment-history-link" title="2026년 월별 입금내역 보기" href="{% url 'core:member_payment_history' member.pk %}" data-modal-url="{% url 'core:member_payment_history' member.pk %}">{{ member.name }}</a></td>
             <td class="mono">{{ member.phone|phone_format|default:'-' }}</td>
             <td class="mono">{{ member.closed_on|date:'y. n. j.'|default:'-' }}</td>
             <td class="address-cell" title="{{ member.address }}">{{ member.address|default:'-' }}</td>
-            <td class="right money {% if member.outstanding_amount > 0 %}has-arrears{% else %}zero-arrears{% endif %}">{{ member.outstanding_amount|money }}원</td>
+            <td class="right money balance-cell">{% if member.net_balance > 0 %}<span class="has-arrears">{{ member.net_balance|money }}원</span>{% elif member.net_balance < 0 %}<span class="has-prepayment">{{ member.net_balance|money }}원</span>{% else %}<span class="zero-arrears">0원</span>{% endif %}</td>
             <td><div class="row-actions">
               <a class="mini-action edit" href="{% url 'core:member_edit' member.pk %}" data-modal-url="{% url 'core:member_edit' member.pk %}?modal=1">수정</a>
               <a class="mini-action payment" href="{% url 'core:member_manual_payment' member.pk %}" data-modal-url="{% url 'core:member_manual_payment' member.pk %}?modal=1">입금</a>

@@ -12,8 +12,9 @@ from openpyxl.utils import get_column_letter
 
 from core.models import (
     AccountType, AuditLog, BankTransaction, CardTransaction, Charge, LegalNotice, Member, MessageRecipient,
-    MonthlyJob, Payment, PaymentAllocationLine, Prepayment, Refund, UploadedFile,
+    MonthlyJob, Payment, PaymentAllocationLine, Prepayment, Refund, UploadedFile, Vehicle,
 )
+from core.services.ledger import member_balance_snapshot
 
 HEADER_FILL = PatternFill('solid', fgColor='D9EAF7')
 SUBTOTAL_FILL = PatternFill('solid', fgColor='FFF2CC')
@@ -378,50 +379,74 @@ def build_receivables_workbook(job: MonthlyJob) -> BytesIO:
     ws.title = '현재명단'
     headers = [
         '지역', '계정', '비고', '이름', '차량번호', '상태', '최초부과기준',
-        f'{job.month}월 입금액', f'{job.month}월 입금날짜', '현재 미수금', '선납금', '전화번호', '주소',
+        f'{job.month}월 입금액', f'{job.month}월 입금날짜', '현재 잔액', '전화번호', '주소',
     ]
     ws.append(headers)
-    members = Member.objects.filter(
+    members = list(Member.objects.filter(
         is_active_record=True,
         operational_status=Member.OperationalStatus.ACTIVE,
-    ).order_by('region', 'name')
+    ).order_by('region', 'name'))
+    member_ids = [member.id for member in members]
+    balances = member_balance_snapshot(member_ids)
+    vehicle_map = {
+        row['member_id']: row['vehicle_no']
+        for row in Vehicle.objects.filter(member_id__in=member_ids, is_current=True).values('member_id', 'vehicle_no')
+    }
+    monthly_map = defaultdict(lambda: {'amount': Decimal('0'), 'dates': []})
+    monthly_lines = PaymentAllocationLine.objects.filter(
+        member_id__in=member_ids, status=PaymentAllocationLine.Status.ACTIVE,
+        payment__is_effective=True,
+        payment__payment_date__date__gte=job.period_start,
+        payment__payment_date__date__lte=job.period_end,
+    ).select_related('payment').order_by('payment__payment_date', 'id')
+    for line in monthly_lines:
+        monthly_map[line.member_id]['amount'] += line.amount
+        monthly_map[line.member_id]['dates'].append(line.payment.payment_date.strftime('%m.%d'))
     for member in members:
-        vehicle = member.current_vehicle
-        paid, dates = _monthly_payment_summary(member, job)
-        prepayment = member.prepayments.aggregate(v=Sum('balance'))['v'] or Decimal('0')
+        summary = monthly_map[member.id]
         account = member.get_receivable_account_type_display() if member.receivable_account_type else (
             '협회비' if member.membership_status == Member.MembershipStatus.ACTIVE else '관리비'
         )
         anchor = member.membership_started_on if account == '협회비' else member.certificate_issued_on
         ws.append([
-            member.region, account, member.memo, member.name, vehicle.vehicle_no if vehicle else '',
-            member.get_operational_status_display(), anchor, paid, dates, member.total_outstanding,
-            prepayment, member.phone, member.address,
+            member.region, account, member.memo, member.name, vehicle_map.get(member.id, ''),
+            member.get_operational_status_display(), anchor, summary['amount'], ', '.join(summary['dates']),
+            balances.get(member.id, {}).get('net_balance', Decimal('0')),
+            member.phone, member.address,
         ])
     _style_header(ws)
-    for col in ('H', 'J', 'K'):
+    for col in ('H', 'J'):
         for cell in ws[col][1:]:
             cell.number_format = '#,##0'
     _autosize_sheet(ws)
 
     closed = wb.create_sheet('폐업명단')
-    closed.append(['지역', '계정', '비고', '이름', '차량번호', '폐업일', '기존 미수금', '선납금', '환불상태', '전화번호', '주소'])
-    for member in Member.objects.filter(
+    closed.append(['지역', '계정', '비고', '이름', '차량번호', '폐업일', '현재 잔액', '환불대기', '전화번호', '주소'])
+    closed_members = list(Member.objects.filter(
         is_active_record=True,
         operational_status=Member.OperationalStatus.CLOSED,
-    ).order_by('-closed_on', 'name'):
-        vehicle = member.current_vehicle
-        prepayment = member.prepayments.aggregate(v=Sum('balance'))['v'] or Decimal('0')
-        pending_refund = member.refunds.filter(status=Refund.Status.PENDING).aggregate(v=Sum('amount'))['v'] or Decimal('0')
+    ).order_by('-closed_on', 'name'))
+    closed_ids = [member.id for member in closed_members]
+    closed_balances = member_balance_snapshot(closed_ids)
+    closed_vehicle_map = {
+        row['member_id']: row['vehicle_no']
+        for row in Vehicle.objects.filter(member_id__in=closed_ids, is_current=True).values('member_id', 'vehicle_no')
+    }
+    refund_map = {
+        row['member_id']: row['total'] or Decimal('0')
+        for row in Refund.objects.filter(member_id__in=closed_ids, status=Refund.Status.PENDING).values('member_id').annotate(total=Sum('amount'))
+    }
+    for member in closed_members:
         account = member.get_receivable_account_type_display() if member.receivable_account_type else (
             '협회비' if member.membership_status == Member.MembershipStatus.ACTIVE else '관리비'
         )
         closed.append([
-            member.region, account, member.memo, member.name, vehicle.vehicle_no if vehicle else '',
-            member.closed_on, member.total_outstanding, prepayment, pending_refund, member.phone, member.address,
+            member.region, account, member.memo, member.name, closed_vehicle_map.get(member.id, ''),
+            member.closed_on, closed_balances.get(member.id, {}).get('net_balance', Decimal('0')),
+            refund_map.get(member.id, Decimal('0')), member.phone, member.address,
         ])
     _style_header(closed)
-    for col in ('G', 'H', 'I'):
+    for col in ('G', 'H'):
         for cell in closed[col][1:]:
             cell.number_format = '#,##0'
     _autosize_sheet(closed)

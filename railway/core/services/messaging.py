@@ -13,6 +13,7 @@ from core.models import (
     Member, MessageBatch, MessageRecipient, MessageTemplate, Refund,
 )
 from core.services.audit import log_action
+from core.services.ledger import member_balance_snapshot
 
 
 DEFAULT_TEMPLATES = {
@@ -118,8 +119,10 @@ def create_arrears_batch(member_ids, *, due_date: date, scheduled_at=None, immed
         status=MessageBatch.Status.DRAFT if immediate else MessageBatch.Status.SCHEDULED,
         created_by=actor,
     )
-    for member in Member.objects.filter(id__in=member_ids).order_by('name'):
-        amount = member.total_outstanding
+    members = list(Member.objects.filter(id__in=member_ids).order_by('name'))
+    balances = member_balance_snapshot([member.id for member in members])
+    for member in members:
+        amount = max(Decimal('0'), balances.get(member.id, {}).get('net_balance', Decimal('0')))
         exclusion = recipient_exclusion_reason(member)
         if amount <= 0:
             exclusion = '미수금 없음'
@@ -185,7 +188,9 @@ def _latest_refund(member: Member, completed: bool):
 @transaction.atomic
 def refresh_batch_recipients(batch: MessageBatch):
     templates = ensure_default_templates()
-    for recipient in batch.recipients.select_related('member'):
+    recipients = list(batch.recipients.select_related('member'))
+    balances = member_balance_snapshot([recipient.member_id for recipient in recipients])
+    for recipient in recipients:
         if recipient.status in {MessageRecipient.Status.SENT, MessageRecipient.Status.CANCELLED}:
             continue
         if recipient.status == MessageRecipient.Status.EXCLUDED and recipient.exclusion_reason == '이번 발송 제외':
@@ -197,7 +202,7 @@ def refresh_batch_recipients(batch: MessageBatch):
         refund_date = recipient.refund_date_snapshot
 
         if batch.message_type == MessageTemplate.TemplateType.ARREARS:
-            amount = member.total_outstanding
+            amount = max(Decimal('0'), balances.get(member.id, {}).get('net_balance', Decimal('0')))
             if amount <= 0:
                 exclusion = '발송 전 전액 납부 완료'
             elif has_successful_arrears_today(member):

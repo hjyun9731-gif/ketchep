@@ -18,14 +18,14 @@ from django.urls import reverse
 from django.utils import timezone
 
 from core.forms import (
-    AllocationFormSet, ArrearsComposeForm, BankPasteForm, CloseMemberForm, ColumnMappingForm,
+    AllocationFormSet, ArrearsComposeForm, BankPasteForm, CertificateCandidateForm, CloseMemberForm, ColumnMappingForm,
     InitialDataImportForm,
     JoinAssociationForm, LeaveAssociationForm, LegalNoticeForm, ManualPaymentForm, MemberForm, QuickMemberForm,
     MessageScheduleEditForm, MonthlyJobForm, RefundForm, RefundMessageForm, RefundPendingForm,
     ReopenMemberForm, SimpleExcelUploadForm, TransferMemberForm, UploadForm,
 )
 from core.models import (
-    AccountType, AuditLog, BankTransaction, CardTransaction, Charge, ChargeSettlement, ImportIssue, LegalNotice, Member, PayerAlias,
+    AccountType, AuditLog, BankTransaction, CardTransaction, Charge, ChargeSettlement, HistoricalPaymentRecord, ImportIssue, LegalNotice, Member, PayerAlias,
     MessageBatch, MessageRecipient, MessageTemplate, MonthlyJob, Payment, MemberLink,
     PaymentAllocationLine, Prepayment, Refund, UploadedFile, Vehicle,
 )
@@ -38,9 +38,10 @@ from core.services.exports import (
     build_bank_ledger_workbook, build_receivables_workbook, build_voucher_workbook, build_workbook,
 )
 from core.services.imports import parse_uploaded_file, process_uploaded_file
+from core.services.historical_payments import backfill_receivable_payment_history
 from core.services.paste_import import get_or_create_current_job, process_pasted_bank_text
 from core.services.jobs import create_job_version, clone_latest_uploaded_files, set_current_job
-from core.services.ledger import complete_refund, replace_payment_allocations
+from core.services.ledger import complete_refund, member_balance_snapshot, rebuild_member_account, replace_payment_allocations
 from core.services.matching import (
     auto_match_bank_job, auto_match_card_job, copy_allocations_from_previous_version,
 )
@@ -55,7 +56,7 @@ from core.services.messaging import (
     sync_batch_results,
     update_batch_schedule,
 )
-from core.utils import json_safe_model, normalize_text, normalize_vehicle_no, sha256_file
+from core.utils import extract_purpose_char, json_safe_model, normalize_text, normalize_vehicle_no, sha256_file
 
 
 MONEY_FIELD = DecimalField(max_digits=14, decimal_places=2)
@@ -90,6 +91,12 @@ def _member_queryset_with_financials(queryset):
         .annotate(total=Sum('amount'))
         .values('total')[:1]
     )
+    prepayment_total = (
+        Prepayment.objects.filter(member_id=OuterRef('pk'), balance__gt=0)
+        .values('member_id')
+        .annotate(total=Sum('balance'))
+        .values('total')[:1]
+    )
     return (
         queryset.annotate(
             current_vehicle_no=Subquery(current_vehicle),
@@ -101,10 +108,20 @@ def _member_queryset_with_financials(queryset):
                 Subquery(settlement_total, output_field=MONEY_FIELD),
                 MONEY_ZERO_VALUE,
             ),
+            prepayment_amount=Coalesce(
+                Subquery(prepayment_total, output_field=MONEY_FIELD),
+                MONEY_ZERO_VALUE,
+            ),
         )
         .annotate(
             outstanding_amount=ExpressionWrapper(
                 F('charge_total_fast') - F('settlement_total_fast'),
+                output_field=MONEY_FIELD,
+            )
+        )
+        .annotate(
+            net_balance=ExpressionWrapper(
+                F('outstanding_amount') - F('prepayment_amount'),
                 output_field=MONEY_FIELD,
             )
         )
@@ -146,12 +163,19 @@ def _attach_member_page_data(page_obj):
             Q(charge__monthly_job__isnull=True) | Q(charge__monthly_job__is_current=True)
         ).values('charge__member_id').annotate(total=Sum('amount'))
     }
+    prepayment_map = {
+        row['member_id']: row['total'] or Decimal('0')
+        for row in Prepayment.objects.filter(member_id__in=member_ids, balance__gt=0)
+        .values('member_id').annotate(total=Sum('balance'))
+    }
     for member in members:
         member.current_vehicle_no = vehicle_map.get(member.id, '')
         member.outstanding_amount = max(
             Decimal('0'),
             charge_map.get(member.id, Decimal('0')) - settlement_map.get(member.id, Decimal('0')),
         )
+        member.prepayment_amount = max(Decimal('0'), prepayment_map.get(member.id, Decimal('0')))
+        member.net_balance = member.outstanding_amount - member.prepayment_amount
     page_obj.object_list = members
     return page_obj
 
@@ -255,28 +279,23 @@ def dashboard(request):
     ]
     current_transactions = BankTransaction.objects.filter(job=job, is_effective=True)
     today_transactions = current_transactions.filter(transaction_at__date=today)
-    charge_total = Charge.objects.filter(
-        member__in=active_members,
-        status=Charge.Status.POSTED,
-    ).filter(
-        Q(monthly_job__isnull=True) | Q(monthly_job__is_current=True)
-    ).aggregate(v=Sum('amount'))['v'] or Decimal('0')
-    settlement_total = ChargeSettlement.objects.filter(
-        charge__member__in=active_members,
-        charge__status=Charge.Status.POSTED,
-        is_active=True,
-    ).filter(
-        Q(charge__monthly_job__isnull=True) | Q(charge__monthly_job__is_current=True)
-    ).aggregate(v=Sum('amount'))['v'] or Decimal('0')
+    active_ids = list(active_members.values_list('id', flat=True))
+    dashboard_balances = member_balance_snapshot(active_ids)
+    signed_outstanding = sum((max(Decimal('0'), row['net_balance']) for row in dashboard_balances.values()), Decimal('0'))
+    reset_txs = current_transactions.filter(source_sheet='붙여넣기', uploaded_file__original_name__endswith='_붙여넣기.tsv')
+    reset_payment_ids = list(reset_txs.values_list('payment__id', flat=True).exclude(payment__id__isnull=True))
+    reset_allocations = PaymentAllocationLine.objects.filter(payment_id__in=reset_payment_ids, status=PaymentAllocationLine.Status.ACTIVE).count() if reset_payment_ids else 0
     summary = {
         'members': active_members.count(),
         'closed_members': closed_members.count(),
-        'outstanding': charge_total - settlement_total,
+        'outstanding': signed_outstanding,
         'today_amount': today_transactions.aggregate(v=Sum('amount'))['v'] or Decimal('0'),
         'today_count': today_transactions.count(),
         'review_transactions': current_transactions.filter(status__in=review_statuses).count(),
         'auto_matched': current_transactions.filter(status=BankTransaction.Status.AUTO_MATCHED).count(),
         'prepayment': Prepayment.objects.aggregate(v=Sum('balance'))['v'] or Decimal('0'),
+        'reset_transactions': reset_txs.count(),
+        'reset_allocations': reset_allocations,
     }
     recent = current_transactions.select_related('payment').order_by('-transaction_at', '-id')[:12]
     review_rows = current_transactions.filter(status__in=review_statuses).select_related('payment').order_by('-transaction_at', '-id')[:12]
@@ -312,6 +331,7 @@ def initial_data_import(request):
                 slot_type=UploadedFile.SlotType.RECEIVABLES,
                 file_obj=form.cleaned_data['receivables_file'],
             )
+            history_result = backfill_receivable_payment_history(receivable_upload)
             issue_count = ImportIssue.objects.filter(
                 uploaded_file__in=[license_upload, receivable_upload],
                 status=ImportIssue.Status.OPEN,
@@ -323,6 +343,7 @@ def initial_data_import(request):
                 f"회원 갱신 {license_result.get('updated_members', 0)}명 · "
                 f"기초 미수금 {receivable_result.get('opening_charges', 0)}건 · "
                 f"선납금 {receivable_result.get('opening_prepayments', 0)}건 · "
+                f"1~7월 입금이력 {history_result.get('created', 0) + history_result.get('updated', 0)}건 · "
                 f'확인 필요 {issue_count}건',
             )
             return redirect('core:member_list')
@@ -356,6 +377,78 @@ def bank_paste(request):
         )
     except Exception as exc:
         messages.error(request, f'입금내역 처리 실패: {exc}')
+    return redirect('core:dashboard')
+
+
+@login_required
+@transaction.atomic
+def bank_reconciliation_reset(request):
+    """Reset only the current month's bank-paste reconciliation.
+
+    Member data, charges, card payments and manual payments are preserved. Bank
+    payments created from NH paste are made ineffective and their active
+    allocations are cancelled, then each affected member/account ledger is
+    rebuilt once so arrears/prepayments return to the state before the paste.
+    """
+    if request.method != 'POST':
+        raise Http404
+
+    today = timezone.localdate()
+    job = get_or_create_current_job(today)
+    txs = list(
+        BankTransaction.objects.filter(
+            job=job, is_effective=True, source_sheet='붙여넣기',
+            uploaded_file__original_name__endswith='_붙여넣기.tsv',
+        )
+        .select_related('payment')
+        .order_by('id')
+    )
+    if not txs:
+        messages.info(request, '초기화할 이번 달 입금대조 내역이 없습니다.')
+        return redirect('core:dashboard')
+
+    payment_ids = [tx.payment.id for tx in txs if hasattr(tx, 'payment')]
+    active_lines = PaymentAllocationLine.objects.filter(
+        payment_id__in=payment_ids, status=PaymentAllocationLine.Status.ACTIVE,
+    )
+    impacted = set(active_lines.values_list('member_id', 'account_type'))
+    cancelled_lines = active_lines.count()
+    active_lines.update(status=PaymentAllocationLine.Status.CANCELLED)
+
+    Payment.objects.filter(id__in=payment_ids).update(
+        status=Payment.Status.CANCELLED, is_effective=False,
+    )
+    BankTransaction.objects.filter(id__in=[tx.id for tx in txs]).update(
+        status=BankTransaction.Status.IGNORED,
+        is_effective=False,
+        match_reason='입금대조 초기화',
+    )
+
+    recurring_impacted = {
+        (member_id, account_type) for member_id, account_type in impacted
+        if account_type in {AccountType.MEMBERSHIP_FEE, AccountType.MANAGEMENT_FEE}
+    }
+    for member_id, account_type in recurring_impacted:
+        member = Member.objects.get(pk=member_id)
+        rebuild_member_account(member, account_type)
+
+    log_action(
+        action='bank_reconciliation_reset',
+        instance=job,
+        after={
+            'transactions_reset': len(txs),
+            'payments_cancelled': len(payment_ids),
+            'allocation_lines_cancelled': cancelled_lines,
+            'accounts_rebuilt': len(recurring_impacted),
+        },
+        reason='사용자 요청으로 이번 달 농협 입금대조 초기화',
+        actor=_actor(request),
+    )
+    messages.success(
+        request,
+        f'이번 달 입금대조를 초기화했습니다. 거래 {len(txs)}건 · 배정 {cancelled_lines}건을 되돌렸습니다. '
+        '회원명단·부과·카드결제·수기입금은 건드리지 않았습니다.',
+    )
     return redirect('core:dashboard')
 
 
@@ -581,6 +674,85 @@ def export_all(request):
     return FileResponse(output, as_attachment=True, filename=filename)
 
 
+def _member_lookup_rows(q, limit=20):
+    """Return compact member candidates for both AJAX and no-JS lookup.
+
+    The allocation screen must remain usable even when browser JavaScript or an
+    AJAX request fails, so this helper is shared by the JSON endpoint and the
+    normal GET fallback rendered by payment_allocate().
+    """
+    q = (q or '').strip()
+    if not q:
+        return []
+
+    digits = ''.join(ch for ch in q if ch.isdigit())
+    vehicle_q = normalize_vehicle_no(q)
+    query = Q(name__icontains=q) | Q(management_no__icontains=q)
+
+    # Phone numbers are stored in mixed formats (010-1234-5678 / 01012345678).
+    # Search both the literal input and common digit-group variants.
+    query |= Q(phone__icontains=q)
+    if digits:
+        query |= Q(birth6__icontains=digits)
+        query |= Q(phone__icontains=digits)
+        if len(digits) == 11:
+            query |= Q(phone__icontains=f'{digits[:3]}-{digits[3:7]}-{digits[7:]}')
+        elif len(digits) == 10:
+            query |= Q(phone__icontains=f'{digits[:3]}-{digits[3:6]}-{digits[6:]}')
+
+    # Search both raw and normalized vehicle values. The raw fallback also
+    # covers legacy rows whose normalized_vehicle_no was not backfilled.
+    if q:
+        query |= Q(vehicles__vehicle_no__icontains=q)
+    if vehicle_q:
+        query |= Q(vehicles__normalized_vehicle_no__icontains=vehicle_q)
+
+    qs = (
+        Member.objects.filter(is_active_record=True)
+        .filter(query)
+        .distinct()
+        .order_by('name', 'management_no', 'id')[:limit]
+    )
+    members = list(qs)
+    member_ids = [member.id for member in members]
+    vehicle_map = {
+        row['member_id']: row['vehicle_no']
+        for row in Vehicle.objects.filter(member_id__in=member_ids, is_current=True)
+        .order_by('member_id', '-start_date', '-id')
+        .values('member_id', 'vehicle_no')
+    }
+
+    rows = []
+    for member in members:
+        vehicle = vehicle_map.get(member.id, '')
+        status = '폐업' if member.operational_status == Member.OperationalStatus.CLOSED else '현재'
+        label_parts = [member.name]
+        if vehicle:
+            label_parts.append(vehicle)
+        if member.region:
+            label_parts.append(member.region)
+        if member.management_no and member.management_no != '0':
+            label_parts.append(f'관리 {member.management_no}')
+        rows.append({
+            'id': member.id,
+            'name': member.name,
+            'vehicle': vehicle,
+            'region': member.region or '',
+            'management_no': '' if member.management_no == '0' else (member.management_no or ''),
+            'phone': member.phone or '',
+            'birth6': member.birth6 or '',
+            'status': status,
+            'label': ' · '.join(label_parts),
+        })
+    return rows
+
+
+@login_required
+def member_lookup(request):
+    """JSON type-ahead lookup. Never renders the full member list."""
+    return JsonResponse({'results': _member_lookup_rows(request.GET.get('q'), 20)})
+
+
 @login_required
 def member_list(request):
     q = request.GET.get('q', '').strip()
@@ -721,9 +893,9 @@ def member_export(request):
     ws = wb.active
     ws.title = '폐업명단' if closed else '현재명단'
     if closed:
-        headers = ['관리번호', '지역', '차량번호', '성명', '생년월일', '핸드폰', '폐업일', '주소', '남은 미수금']
+        headers = ['관리번호', '지역', '차량번호', '성명', '생년월일', '핸드폰', '폐업일', '주소', '잔액']
     else:
-        headers = ['관리번호', '지역', '차량번호', '성명', '생년월일', '핸드폰', '가입상태', '가입일', '자격증명 발급일', '주소', '미수금']
+        headers = ['관리번호', '지역', '차량번호', '성명', '생년월일', '핸드폰', '가입상태', '가입일', '자격증명 발급일', '주소', '잔액']
     ws.append(headers)
     for cell in ws[1]:
         cell.font = Font(bold=True, color='FFFFFF')
@@ -736,9 +908,9 @@ def member_export(request):
             member.birth6 or '', member.phone or '',
         ]
         if closed:
-            values = common + [member.closed_on, member.address or '', float(member.outstanding_amount or 0)]
+            values = common + [member.closed_on, member.address or '', float((member.outstanding_amount or 0) - (member.prepayment_amount or 0))]
         else:
-            values = common + [member.get_membership_status_display(), member.membership_started_on, member.certificate_issued_on, member.address or '', float(member.outstanding_amount or 0)]
+            values = common + [member.get_membership_status_display(), member.membership_started_on, member.certificate_issued_on, member.address or '', float((member.outstanding_amount or 0) - (member.prepayment_amount or 0))]
         ws.append(values)
 
     widths = [16, 12, 18, 12, 12, 16, 12, 13, 16, 42, 14]
@@ -787,6 +959,8 @@ def member_detail(request, pk):
         Q(charge__monthly_job__isnull=True) | Q(charge__monthly_job__is_current=True)
     ).aggregate(v=Sum('amount'))['v'] or Decimal('0')
     outstanding_amount = max(Decimal('0'), charge_total - settlement_total)
+    prepayment_total = member.prepayments.filter(balance__gt=0).aggregate(v=Sum('balance'))['v'] or Decimal('0')
+    net_balance = outstanding_amount - prepayment_total
 
     payments = member.payment_allocation_lines.filter(
         status=PaymentAllocationLine.Status.ACTIVE
@@ -795,6 +969,8 @@ def member_detail(request, pk):
         'member': member,
         'current_vehicle': current_vehicle,
         'outstanding_amount': outstanding_amount,
+        'prepayment_total': prepayment_total,
+        'net_balance': net_balance,
         'charges': charges,
         'payments': payments,
         'prepayments': member.prepayments.all(),
@@ -804,6 +980,67 @@ def member_detail(request, pk):
         'audits': AuditLog.objects.filter(model_name__icontains='member', object_id=str(member.id))[:50],
         'outgoing_links': member.outgoing_links.select_related('new_member').all(),
         'incoming_links': member.incoming_links.select_related('old_member').all(),
+    })
+
+
+@login_required
+def member_payment_history(request, pk):
+    member = get_object_or_404(Member, pk=pk)
+    today = timezone.localdate()
+    year = 2026
+    legacy_start_month = 1
+    legacy_end_month = 7
+    current_month = today.month if today.year == year else 12
+    display_end_month = max(legacy_end_month, current_month)
+
+    # 2026년 1~7월은 기존 미수금 원본을 조회용 사실로 유지한다.
+    legacy = list(
+        HistoricalPaymentRecord.objects.filter(
+            member=member, year=year,
+            month__gte=legacy_start_month, month__lte=legacy_end_month,
+        ).order_by('month', 'payment_date', 'id')
+    )
+    legacy_monthly = {month: Decimal('0') for month in range(legacy_start_month, legacy_end_month + 1)}
+    for item in legacy:
+        legacy_monthly[item.month] += item.amount
+
+    # 8월 이후는 프로그램에서 처리한 통장·카드·수기입금 원장을 사용한다.
+    live_start_month = 8
+    live_lines = list(
+        member.payment_allocation_lines.filter(
+            status=PaymentAllocationLine.Status.ACTIVE,
+            payment__is_effective=True,
+            payment__payment_date__year=year,
+            payment__payment_date__month__gte=live_start_month,
+            payment__payment_date__month__lte=display_end_month,
+        ).select_related('payment').order_by('payment__payment_date', 'id')
+    )
+    live_monthly = {month: Decimal('0') for month in range(live_start_month, display_end_month + 1)}
+    for line in live_lines:
+        month = timezone.localtime(line.payment.payment_date).month
+        if month in live_monthly:
+            live_monthly[month] += line.amount
+
+    month_rows = []
+    for month in range(1, display_end_month + 1):
+        if month <= legacy_end_month:
+            amount = legacy_monthly.get(month, Decimal('0'))
+            source = 'legacy'
+        else:
+            amount = live_monthly.get(month, Decimal('0'))
+            source = 'live'
+        month_rows.append({'month': month, 'amount': amount, 'source': source})
+
+    return render(request, 'core/partials/member_payment_history_modal.html', {
+        'member': member,
+        'year': year,
+        'legacy_start_month': legacy_start_month,
+        'legacy_end_month': legacy_end_month,
+        'display_end_month': display_end_month,
+        'legacy': legacy,
+        'month_rows': month_rows,
+        'live_lines': live_lines,
+        'current_month': current_month,
     })
 
 
@@ -889,10 +1126,14 @@ def member_close(request, pk):
                 form.add_error(None, str(exc))
             else:
                 messages.error(request, str(exc))
+    snapshot = member_balance_snapshot([member.id]).get(member.id, {'outstanding': Decimal('0'), 'prepayment': Decimal('0'), 'net_balance': Decimal('0')})
     context = {
         'form': form, 'member': member,
         'title': f'{member.name} {"이관" if action_mode == "move" else "폐업"} 처리',
         'action_mode': action_mode,
+        'outstanding_amount': snapshot['outstanding'],
+        'prepayment_amount': snapshot['prepayment'],
+        'net_balance': snapshot['net_balance'],
     }
     if modal:
         return _modal_form_response(
@@ -1142,6 +1383,7 @@ def card_upload(request, provider):
                 request,
                 f'{uploaded.get_slot_type_display()} 반영 완료: '
                 f"신규 {result.get('created_transactions', 0)}건 · "
+                f"취소원복 {result.get('cancelled_transactions', 0)}건 · "
                 f"중복의심 {result.get('duplicates', 0)}건",
             )
     except Exception as exc:
@@ -1157,6 +1399,28 @@ def payment_allocate(request, pk):
         'member': line.member_id, 'account_type': line.account_type,
         'amount': line.amount, 'memo': line.memo,
     } for line in existing]
+
+    member_q = (request.GET.get('member_q') or '').strip()
+    lookup_results = _member_lookup_rows(member_q, 20) if member_q else []
+    picked_member = None
+    pick = (request.GET.get('pick') or '').strip()
+    if request.method == 'GET' and pick:
+        try:
+            picked_member = Member.objects.filter(is_active_record=True, pk=int(pick)).first()
+        except (TypeError, ValueError):
+            picked_member = None
+        if picked_member:
+            account_type = picked_member.receivable_account_type or (AccountType.MEMBERSHIP_FEE if picked_member.membership_status == Member.MembershipStatus.ACTIVE else AccountType.MANAGEMENT_FEE)
+            amount = payment.unallocated_amount if payment.unallocated_amount > 0 else payment.amount
+            initial = [{
+                'member': picked_member.pk,
+                'account_type': account_type,
+                'amount': amount,
+                'memo': '',
+            }]
+
+    if not initial:
+        initial = [{}]
     formset = AllocationFormSet(request.POST or None, initial=initial)
     if request.method == 'POST' and formset.is_valid():
         rows = []
@@ -1191,68 +1455,185 @@ def payment_allocate(request, pk):
             return redirect('core:dashboard')
         except Exception as exc:
             messages.error(request, str(exc))
-    return render(request, 'core/payment_allocate.html', {'payment': payment, 'formset': formset})
+    unallocated_amount = payment.unallocated_amount
+    return render(request, 'core/payment_allocate.html', {
+        'payment': payment,
+        'formset': formset,
+        'member_q': member_q,
+        'lookup_results': lookup_results,
+        'picked_member': picked_member,
+        'unallocated_amount': unallocated_amount,
+        'is_certificate_candidate': bool(
+            payment.bank_transaction_id and unallocated_amount in {Decimal('30000'), Decimal('50000')}
+        ),
+    })
+
+
+@login_required
+@transaction.atomic
+def payment_certificate_candidate(request, pk):
+    payment = get_object_or_404(Payment.objects.select_related('bank_transaction'), pk=pk)
+    if not payment.bank_transaction_id or payment.source_type != Payment.SourceType.BANK:
+        raise Http404
+    if payment.amount not in {Decimal('30000'), Decimal('50000')}:
+        messages.error(request, '30,000원 또는 50,000원 입금만 신규 자격증명 후보로 처리할 수 있습니다.')
+        return redirect('core:payment_allocate', pk=payment.pk)
+    payer = payment.bank_transaction.payer_text or ''
+    digits = ''.join(ch for ch in payer if ch.isdigit())
+    name_guess = ''.join(ch for ch in payer if not ch.isdigit()).strip()
+    form = CertificateCandidateForm(request.POST or None, initial={'name': name_guess})
+    if request.method == 'POST' and form.is_valid():
+        vehicle_no = form.cleaned_data['vehicle_no'].strip()
+        purpose = extract_purpose_char(vehicle_no)
+        amount = payment.amount
+        if purpose == '배':
+            if amount not in {Decimal('30000'), Decimal('50000')}:
+                form.add_error(None, '배 차량 비회원 자격증명 발급비는 30,000원입니다.')
+            allocations = [
+                {'account_type': AccountType.CERTIFICATE_FEE, 'amount': Decimal('30000'), 'memo': '신규 자격증명 발급비'},
+            ]
+            if amount == Decimal('50000'):
+                allocations.append({'account_type': AccountType.MANAGEMENT_FEE, 'amount': Decimal('20000'), 'memo': '관리비 선납 4개월분'})
+        else:
+            if amount != Decimal('50000'):
+                form.add_error(None, '비 배 차량 비회원 자격증명 발급비는 50,000원입니다.')
+            allocations = [{'account_type': AccountType.CERTIFICATE_FEE, 'amount': Decimal('50000'), 'memo': '신규 자격증명 발급비'}]
+        if not form.errors:
+            member = Member.objects.create(
+                name=form.cleaned_data['name'].strip(),
+                region=form.cleaned_data['region'].strip(),
+                membership_status=Member.MembershipStatus.NON_MEMBER,
+                receivable_account_type=AccountType.MANAGEMENT_FEE,
+                first_seen_on=timezone.localdate(),
+                association_system_registration_needed=True,
+                memo=' · '.join(filter(None, ['협회관리시스템 예정자 등록 필요', (form.cleaned_data.get('memo') or '').strip()])),
+            )
+            Vehicle.objects.create(
+                member=member, vehicle_no=vehicle_no, normalized_vehicle_no=normalize_vehicle_no(vehicle_no),
+                purpose_char=purpose, start_date=timezone.localdate(), is_current=True,
+                change_reason='자격증명 입금 확인 후 신규 등록',
+            )
+            replace_payment_allocations(
+                payment,
+                [dict(row, member=member) for row in allocations],
+                reason='신규 자격증명 입금 확인', actor=_actor(request),
+            )
+            tx = payment.bank_transaction
+            tx.status = BankTransaction.Status.MANUAL_MATCHED
+            tx.match_reason = '신규 자격증명 입금 확정 · 협회관리시스템 예정자 등록 필요'
+            tx.save(update_fields=['status', 'match_reason', 'updated_at'])
+            _invalidate_member_list_cache()
+            log_action(action='certificate_candidate_confirmed', instance=member, after={'payment_id': payment.id, 'amount': str(payment.amount)}, actor=_actor(request))
+            messages.success(request, f'{member.name} 신규 자격증명 입금으로 처리했습니다. 협회관리시스템 예정자 등록이 필요합니다.')
+            return redirect('core:member_list')
+    return render(request, 'core/certificate_candidate.html', {
+        'payment': payment, 'form': form, 'payer': payer, 'digits_hint': digits[-4:] if len(digits) >= 4 else digits,
+    })
 
 
 @login_required
 def charge_list(request):
-    account = request.GET.get('account', '')
-    region = request.GET.get('region', '')
+    account = request.GET.get('account', '').strip()
+    region = request.GET.get('region', '').strip()
     q = request.GET.get('q', '').strip()
     min_amount = request.GET.get('min_amount', '').strip()
     max_amount = request.GET.get('max_amount', '').strip()
+    overdue_months = request.GET.get('overdue_months', '').strip()
+    last_payment_from = request.GET.get('last_payment_from', '').strip()
+    last_payment_to = request.GET.get('last_payment_to', '').strip()
     balance_state = request.GET.get('balance_state', 'outstanding')
 
-    charges = (
-        Charge.objects.filter(Q(monthly_job__isnull=True) | Q(monthly_job__is_current=True))
-        .filter(status=Charge.Status.POSTED)
-        .select_related('member', 'monthly_job')
-        .annotate(
-            settled_total=Coalesce(
-                Sum('settlements__amount', filter=Q(settlements__is_active=True)),
-                MONEY_ZERO_VALUE,
-            ),
-        )
-        .annotate(
-            balance_amount=ExpressionWrapper(
-                F('amount') - F('settled_total'), output_field=MONEY_FIELD,
-            ),
-        )
-    )
-    if account:
-        charges = charges.filter(account_type=account)
+    members = Member.objects.filter(is_active_record=True)
     if region:
-        charges = charges.filter(member__region=region)
+        members = members.filter(region=region)
+    if account in {AccountType.MEMBERSHIP_FEE, AccountType.MANAGEMENT_FEE}:
+        members = members.filter(receivable_account_type=account)
     if q:
-        charges = charges.filter(
-            Q(member__name__icontains=q) | Q(member__vehicles__vehicle_no__icontains=q)
-        ).distinct()
+        members = members.filter(Q(name__icontains=q) | Q(vehicles__vehicle_no__icontains=q)).distinct()
+
+    members = _member_queryset_with_financials(members)
     if balance_state == 'outstanding':
-        charges = charges.filter(balance_amount__gt=0)
+        members = members.filter(net_balance__gt=0)
     elif balance_state == 'paid':
-        charges = charges.filter(balance_amount__lte=0)
+        members = members.filter(net_balance=0)
+    elif balance_state == 'prepaid':
+        members = members.filter(net_balance__lt=0)
+
     try:
-        if min_amount:
-            charges = charges.filter(balance_amount__gte=Decimal(min_amount.replace(',', '')))
-        if max_amount:
-            charges = charges.filter(balance_amount__lte=Decimal(max_amount.replace(',', '')))
+        min_value = Decimal(min_amount.replace(',', '')) if min_amount else None
+        max_value = Decimal(max_amount.replace(',', '')) if max_amount else None
+        if balance_state == 'prepaid':
+            if min_value is not None:
+                members = members.filter(net_balance__lte=-min_value)
+            if max_value is not None:
+                members = members.filter(net_balance__gte=-max_value)
+        else:
+            if min_value is not None:
+                members = members.filter(net_balance__gte=min_value)
+            if max_value is not None:
+                members = members.filter(net_balance__lte=max_value)
     except Exception:
         messages.warning(request, '금액 필터는 숫자로 입력하세요.')
 
-    regions = list(
-        Member.objects.filter(is_active_record=True).exclude(region='')
-        .values_list('region', flat=True).distinct().order_by('region')
-    )
-    paginator = Paginator(charges.order_by('-balance_amount', 'member__region', 'member__name'), 100)
+    if overdue_months:
+        try:
+            from dateutil.relativedelta import relativedelta
+            threshold = timezone.localdate() - relativedelta(months=int(overdue_months))
+            overdue_member_ids = Charge.objects.filter(
+                Q(monthly_job__isnull=True) | Q(monthly_job__is_current=True),
+                status=Charge.Status.POSTED, charge_date__lte=threshold,
+            ).annotate(
+                settled=Coalesce(Sum('settlements__amount', filter=Q(settlements__is_active=True)), MONEY_ZERO_VALUE),
+            ).annotate(
+                remaining=ExpressionWrapper(F('amount') - F('settled'), output_field=MONEY_FIELD),
+            ).filter(remaining__gt=0).values('member_id')
+            members = members.filter(id__in=Subquery(overdue_member_ids))
+        except Exception:
+            messages.warning(request, '미납기간 조건을 확인하세요.')
+
+    try:
+        if last_payment_from:
+            members = members.filter(payment_allocation_lines__status=PaymentAllocationLine.Status.ACTIVE, payment_allocation_lines__payment__is_effective=True, payment_allocation_lines__payment__payment_date__date__gte=last_payment_from)
+        if last_payment_to:
+            members = members.filter(payment_allocation_lines__status=PaymentAllocationLine.Status.ACTIVE, payment_allocation_lines__payment__is_effective=True, payment_allocation_lines__payment__payment_date__date__lte=last_payment_to)
+        if last_payment_from or last_payment_to:
+            members = members.distinct()
+    except Exception:
+        messages.warning(request, '최근 입금일 조건을 확인하세요.')
+
+    paginator = Paginator(members.order_by('-net_balance', 'region', 'name', 'id'), 100)
     page_obj = paginator.get_page(request.GET.get('page'))
+    visible = list(page_obj.object_list)
+    ids = [m.id for m in visible]
+    vehicle_map = {r['member_id']: r['vehicle_no'] for r in Vehicle.objects.filter(member_id__in=ids, is_current=True).values('member_id','vehicle_no')}
+    latest_lines = PaymentAllocationLine.objects.filter(
+        member_id__in=ids, status=PaymentAllocationLine.Status.ACTIVE,
+        payment__is_effective=True,
+    ).exclude(payment__status=Payment.Status.CANCELLED).select_related('payment').order_by('member_id','-payment__payment_date','-id')
+    latest_map = {}
+    for line in latest_lines:
+        latest_map.setdefault(line.member_id, (line.payment.payment_date, line.amount))
+    oldest_rows = Charge.objects.filter(
+        Q(monthly_job__isnull=True) | Q(monthly_job__is_current=True), member_id__in=ids,
+        status=Charge.Status.POSTED,
+    ).annotate(settled=Coalesce(Sum('settlements__amount', filter=Q(settlements__is_active=True)), MONEY_ZERO_VALUE)).annotate(
+        remaining=ExpressionWrapper(F('amount')-F('settled'), output_field=MONEY_FIELD)
+    ).filter(remaining__gt=0).order_by('member_id','charge_date','id')
+    oldest_map = {}
+    for charge in oldest_rows:
+        oldest_map.setdefault(charge.member_id, charge.charge_date)
+    for member in visible:
+        member.current_vehicle_no = vehicle_map.get(member.id, '')
+        member.latest_payment_date, member.latest_payment_amount = latest_map.get(member.id, (None, Decimal('0')))
+        member.oldest_due_date = oldest_map.get(member.id)
+    page_obj.object_list = visible
+
     return render(request, 'core/charge_list.html', {
-        'charges': page_obj, 'page_obj': page_obj,
-        'account_choices': [
-            (AccountType.MEMBERSHIP_FEE, '협회비'),
-            (AccountType.MANAGEMENT_FEE, '관리비'),
-        ],
-        'account': account, 'region': region, 'regions': regions, 'q': q,
+        'members': page_obj, 'page_obj': page_obj,
+        'account_choices': [(AccountType.MEMBERSHIP_FEE, '협회비'), (AccountType.MANAGEMENT_FEE, '관리비')],
+        'account': account, 'region': region, 'regions': _member_regions(), 'q': q,
         'min_amount': min_amount, 'max_amount': max_amount, 'balance_state': balance_state,
+        'overdue_months': overdue_months, 'last_payment_from': last_payment_from, 'last_payment_to': last_payment_to,
     })
 
 
@@ -1309,6 +1690,16 @@ def arrears_compose(request):
     operational = request.GET.get('operational', '')
     contact = request.GET.get('contact', '')
     collection = request.GET.get('collection', '')
+    region = request.GET.get('region', '').strip()
+    account = request.GET.get('account', '').strip()
+    membership = request.GET.get('membership', '').strip()
+    amount_band = request.GET.get('amount_band', '').strip()
+    min_amount = request.GET.get('min_amount', '').strip()
+    max_amount = request.GET.get('max_amount', '').strip()
+    overdue_months = request.GET.get('overdue_months', '').strip()
+    last_payment_from = request.GET.get('last_payment_from', '').strip()
+    last_payment_to = request.GET.get('last_payment_to', '').strip()
+
     members_qs = Member.objects.filter(is_active_record=True).order_by('name')
     if q:
         members_qs = members_qs.filter(
@@ -1316,6 +1707,12 @@ def arrears_compose(request):
         ).distinct()
     if operational:
         members_qs = members_qs.filter(operational_status=operational)
+    if region:
+        members_qs = members_qs.filter(region=region)
+    if account in {AccountType.MEMBERSHIP_FEE, AccountType.MANAGEMENT_FEE}:
+        members_qs = members_qs.filter(receivable_account_type=account)
+    if membership in {choice for choice, _ in Member.MembershipStatus.choices}:
+        members_qs = members_qs.filter(membership_status=membership)
     if collection:
         members_qs = members_qs.filter(collection_status=collection)
     if contact == 'can_sms':
@@ -1328,11 +1725,50 @@ def arrears_compose(request):
         members_qs = members_qs.filter(address_needs_check=True)
     elif contact == 'not_sent':
         members_qs = members_qs.exclude(message_recipients__status__in=[MessageRecipient.Status.ACCEPTED, MessageRecipient.Status.SENT]).distinct()
-    candidates = list(
-        _member_queryset_with_financials(members_qs)
-        .filter(outstanding_amount__gt=0)
-        .order_by('name', 'id')[:1500]
-    )
+
+    financial_qs = _member_queryset_with_financials(members_qs).filter(net_balance__gt=0)
+    band_map = {
+        'under_50k': (None, Decimal('49999')),
+        '50k_100k': (Decimal('50000'), Decimal('99999')),
+        '100k_200k': (Decimal('100000'), Decimal('199999')),
+        '200k_500k': (Decimal('200000'), Decimal('499999')),
+        '500k_plus': (Decimal('500000'), None),
+    }
+    band_min, band_max = band_map.get(amount_band, (None, None))
+    try:
+        min_value = Decimal(min_amount.replace(',', '')) if min_amount else band_min
+        max_value = Decimal(max_amount.replace(',', '')) if max_amount else band_max
+        if min_value is not None:
+            financial_qs = financial_qs.filter(net_balance__gte=min_value)
+        if max_value is not None:
+            financial_qs = financial_qs.filter(net_balance__lte=max_value)
+    except Exception:
+        messages.warning(request, '미수금액 필터는 숫자로 입력하세요.')
+
+    if overdue_months:
+        try:
+            from dateutil.relativedelta import relativedelta
+            threshold = timezone.localdate() - relativedelta(months=int(overdue_months))
+            overdue_member_ids = Charge.objects.filter(
+                Q(monthly_job__isnull=True) | Q(monthly_job__is_current=True), status=Charge.Status.POSTED,
+                charge_date__lte=threshold,
+            ).annotate(settled=Coalesce(Sum('settlements__amount', filter=Q(settlements__is_active=True)), MONEY_ZERO_VALUE)).annotate(
+                remaining=ExpressionWrapper(F('amount')-F('settled'), output_field=MONEY_FIELD)
+            ).filter(remaining__gt=0).values('member_id')
+            financial_qs = financial_qs.filter(id__in=Subquery(overdue_member_ids))
+        except Exception:
+            messages.warning(request, '미납기간 조건을 확인하세요.')
+    if last_payment_from:
+        financial_qs = financial_qs.filter(payment_allocation_lines__status=PaymentAllocationLine.Status.ACTIVE, payment_allocation_lines__payment__is_effective=True, payment_allocation_lines__payment__payment_date__date__gte=last_payment_from)
+    if last_payment_to:
+        financial_qs = financial_qs.filter(payment_allocation_lines__status=PaymentAllocationLine.Status.ACTIVE, payment_allocation_lines__payment__is_effective=True, payment_allocation_lines__payment__payment_date__date__lte=last_payment_to)
+    if last_payment_from or last_payment_to:
+        financial_qs = financial_qs.distinct()
+
+    candidates = list(financial_qs.order_by('-net_balance', 'name', 'id')[:1500])
+    for candidate in candidates:
+        candidate.outstanding_amount = candidate.net_balance
+
     form = ArrearsComposeForm(request.POST or None)
     if request.method == 'POST' and form.is_valid():
         selected = request.POST.getlist('member_ids')
@@ -1351,8 +1787,17 @@ def arrears_compose(request):
     return render(request, 'core/arrears_compose.html', {
         'form': form, 'candidates': candidates, 'q': q,
         'operational': operational, 'contact': contact, 'collection': collection,
+        'region': region, 'regions': _member_regions(), 'account': account,
+        'membership': membership, 'amount_band': amount_band,
+        'min_amount': min_amount, 'max_amount': max_amount,
+        'overdue_months': overdue_months, 'last_payment_from': last_payment_from, 'last_payment_to': last_payment_to,
         'operational_choices': Member.OperationalStatus.choices,
         'collection_choices': Member.CollectionStatus.choices,
+        'membership_choices': Member.MembershipStatus.choices,
+        'account_choices': [
+            (AccountType.MEMBERSHIP_FEE, '협회비'),
+            (AccountType.MANAGEMENT_FEE, '관리비'),
+        ],
     })
 
 

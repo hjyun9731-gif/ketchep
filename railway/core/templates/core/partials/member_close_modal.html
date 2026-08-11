@@ -13,8 +13,9 @@
         <div class="field span-all">{{ form.memo.label_tag }}{{ form.memo }}{{ form.memo.errors }}</div>
       </div>
       <div class="process-summary">
-        <span>현재 미수금 <strong>{{ member.total_outstanding|money }}원</strong></span>
-        <span>처리 후 <strong>신규 부과 중지</strong></span>
+        <span>현재 잔액 <strong>{% if net_balance > 0 %}{{ net_balance|money }}원{% elif net_balance < 0 %}{{ net_balance|money }}원{% else %}0원{% endif %}</strong></span>
+        <span>선납 보유 <strong>{{ prepayment_amount|money }}원</strong></span>
+        <span>처리 후 <strong>{% if prepayment_amount > 0 %}환불대기 생성 · {% endif %}신규 부과 중지</strong></span>
       </div>
     </div>
     <div class="work-modal-foot"><button type="button" class="button" data-modal-close>취소</button><button type="submit" class="button danger-button">{% if action_mode == 'move' %}이관 처리{% else %}폐업 처리{% endif %}</button></div>

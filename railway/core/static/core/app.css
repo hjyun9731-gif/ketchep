@@ -446,3 +446,96 @@ body.wide-data-page{background:#f6f7f9}
   .member-search-bar{grid-template-columns:110px 110px 122px minmax(260px,1fr) auto auto}
   .member-dense-table{min-width:1450px}
 }
+
+/* v4.3.0 — compact member finance/action columns + searchable member picker */
+.member-dense-table{min-width:1360px}
+.member-dense-table .col-address{width:210px}
+.member-dense-table .col-money{width:118px}
+.member-dense-table .col-manage{width:126px}
+.address-cell{max-width:210px;padding-right:5px!important}
+.member-dense-table td.balance-cell{padding-left:5px!important;padding-right:5px!important}
+.member-dense-table td:last-child{padding-left:4px!important;padding-right:5px!important}
+.row-actions{justify-content:flex-start;gap:3px}
+.row-actions .mini-action{height:23px;padding:0 6px;font-size:10px}
+.balance-cell .has-arrears{color:#d01f2f;font-weight:850;white-space:nowrap}
+.balance-cell .has-prepayment{color:#087a63;font-weight:850;white-space:nowrap}
+.balance-cell .zero-arrears{color:#9aa2ad;font-weight:700;white-space:nowrap}
+
+.allocation-row-v43{grid-template-columns:minmax(360px,1.8fr) 150px 150px minmax(150px,.8fr) auto;align-items:start}
+.member-picker-field>label,.allocation-row-v43>div>label{display:block;margin-bottom:5px;color:var(--muted);font-size:11px;font-weight:750}
+.member-picker{position:relative}
+.member-picker-input{width:100%;height:38px;padding-right:34px!important;font-size:13px!important;font-weight:700}
+.member-picker-clear{position:absolute;right:5px;top:5px;width:28px;height:28px;border:0;border-radius:5px;background:transparent;color:#8a929c;font-size:18px;cursor:pointer}
+.member-picker-clear:hover{background:#f1f3f5;color:#20262e}
+.member-picker-results{position:absolute;z-index:80;left:0;right:0;top:calc(100% + 4px);max-height:330px;overflow:auto;border:1px solid #cfd6df;border-radius:7px;background:#fff;box-shadow:0 14px 36px rgba(15,23,42,.18)}
+.member-picker-option{display:flex;width:100%;align-items:center;justify-content:space-between;gap:14px;padding:10px 12px;border:0;border-bottom:1px solid #edf0f3;background:#fff;text-align:left;cursor:pointer}
+.member-picker-option:last-child{border-bottom:0}.member-picker-option:hover,.member-picker-option.active{background:#eef4ff}
+.member-picker-option strong{font-size:13px;color:#111827;white-space:nowrap}.member-picker-option span{overflow:hidden;color:#66707b;font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.member-picker-empty{padding:16px 12px;color:#7a838e;font-size:12px;text-align:center}
+.allocation-delete{padding-top:22px}
+@media(max-width:1050px){.allocation-row-v43{grid-template-columns:1fr 1fr}.member-picker-field{grid-column:1/-1}.allocation-delete{padding-top:0}}
+.arrears-recipient-filter{display:grid;grid-template-columns:minmax(220px,1.5fr) 120px 150px 170px auto auto;gap:7px;align-items:center;padding:12px 14px;border-top:0;border-bottom:1px solid var(--line)}
+.arrears-recipient-filter input,.arrears-recipient-filter select{height:36px;font-size:11px}.arrears-recipient-filter .filter-details{position:relative}.arrears-filter-popover{width:520px}.arrears-filter-popover .filter-grid{grid-template-columns:1fr 1fr 1fr}
+@media(max-width:1200px){.arrears-recipient-filter{grid-template-columns:1fr 1fr 1fr}.arrears-filter-popover{width:100%}.arrears-filter-popover .filter-grid{grid-template-columns:1fr 1fr}}
+
+/* v4.3.1: tighter member row and signed balance */
+.member-dense-table{min-width:1310px}
+.member-dense-table .col-address{width:170px}
+.member-dense-table .col-money{width:96px}
+.member-dense-table .col-manage{width:108px}
+.member-dense-table td.address-cell{padding-right:5px}
+.member-dense-table td.balance-cell{padding-left:4px!important;padding-right:4px!important}
+.member-dense-table td:last-child{padding-left:3px!important;padding-right:4px!important}
+.row-actions{gap:2px}
+.row-actions .mini-action{height:22px;padding:0 5px;font-size:9.5px}
+.balance-cell .has-arrears{color:#d01f2f;font-weight:850}
+.balance-cell .has-prepayment{color:#2457c5;font-weight:850}
+.payment-history-link{cursor:pointer;text-decoration:underline;text-decoration-color:#c5ccd5;text-underline-offset:2px}
+.payment-history-link:hover{text-decoration-color:#2457c5}
+
+/* v4.3.1: member payment history modal */
+.payment-history-modal{width:min(900px,calc(100vw - 40px));max-height:min(780px,calc(100vh - 36px))}
+.payment-history-body{padding:16px 18px 18px;overflow:auto}
+.history-month-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;margin-bottom:16px}
+.history-month-card{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:48px;padding:9px 11px;border:1px solid #e1e5ea;border-radius:8px;background:#fafbfc}
+.history-month-card span{font-size:11px;color:#68717c;font-weight:750}
+.history-month-card strong{font-size:13px;color:#89919c}
+.history-month-card.has-value{background:#fff;border-color:#cfd7e4}
+.history-month-card.has-value strong{color:#111827}
+.history-month-card.total{background:#101820;border-color:#101820}
+.history-month-card.total span,.history-month-card.total strong{color:#fff}
+.history-section{border:1px solid #e1e5ea;border-radius:9px;overflow:hidden;background:#fff}
+.history-section+.history-section{margin-top:12px}
+.history-section-head{display:flex;justify-content:space-between;align-items:center;padding:11px 13px;border-bottom:1px solid #e7eaee;background:#fafbfc}
+.history-section-head h3{margin:0;font-size:13px;color:#20262e}
+.history-section-head p{margin:3px 0 0;font-size:10px;color:#7a838e}
+.history-table-wrap{max-height:330px;overflow:auto}
+.history-table{width:100%;border-collapse:collapse;font-size:11px}
+.history-table th{position:sticky;top:0;z-index:1;padding:7px 9px;background:#f5f6f8;border-bottom:1px solid #dfe3e8;color:#68717c;font-size:10px;text-align:left;white-space:nowrap}
+.history-table td{padding:8px 9px;border-bottom:1px solid #edf0f3;white-space:nowrap}
+.history-table tr:last-child td{border-bottom:0}
+.history-table .right{text-align:right}
+.history-table .money{font-weight:800}
+.live-history-section .history-table-wrap{max-height:220px}
+@media(max-width:900px){.history-month-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.payment-history-modal{width:calc(100vw - 20px)}}
+\n\n/* v4.3.3 — force-refresh readable legacy-office member register */\nbody.wide-data-page{font-size:14px}\n.wide-data-page .app-main{width:100%;max-width:none;padding:8px 8px 26px}\n.wide-data-page .header-inner{width:100%;max-width:none;padding-left:14px;padding-right:14px}\n.member-list-shell{width:100%;max-width:none;border-radius:4px}\n.member-list-heading{padding:10px 12px}\n.member-list-heading h1{font-size:19px}\n.member-list-heading p{font-size:12px}\n.member-tabs-line{padding:0 12px}\n.member-search-bar{grid-template-columns:125px 125px 135px minmax(360px,1fr) auto auto;padding:9px 10px}\n.member-search-bar select,.member-search-bar input{height:34px;font-size:13px}\n.member-result-line{font-size:12px}\n.member-table-wrap{overflow-x:auto;overflow-y:visible}\n.member-dense-table{width:100%;min-width:1510px;table-layout:fixed;font-size:13px}\n.member-dense-table th{height:32px;padding:6px 7px;font-size:11px;letter-spacing:-.01em}\n.member-dense-table td{height:38px;padding:7px 7px;font-size:13px;line-height:1.25}\n.member-dense-table .col-key{width:86px}\n.member-dense-table .col-region{width:70px}\n.member-dense-table .col-vehicle{width:126px}\n.member-dense-table .col-name{width:88px}\n.member-dense-table .col-birth{width:96px}\n.member-dense-table .col-phone{width:126px}\n.member-dense-table .col-membership{width:66px}\n.member-dense-table .col-date{width:102px}\n.member-dense-table .col-address{width:245px}\n.member-dense-table .col-money{width:105px}\n.member-dense-table .col-manage{width:126px}\n.address-cell{max-width:245px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:4px!important}\n.balance-cell{padding-left:4px!important;padding-right:4px!important}\n.row-actions{display:flex;align-items:center;justify-content:flex-start;gap:3px;white-space:nowrap}\n.row-actions .mini-action{height:26px;padding:0 7px;font-size:10.5px;font-weight:800}\n.management-no{font-weight:800}\n.name-link{font-weight:850;cursor:pointer}\n.name-link:hover{color:#2457c5;text-decoration:underline;text-underline-offset:2px}\n.vehicle-link{font-weight:800}\n.balance-cell .has-arrears,.balance-cell .has-prepayment,.balance-cell .zero-arrears{font-size:13px;white-space:nowrap}\n.mini-status{font-size:10.5px}\n.unknown-date{font-size:11px}\n@media(max-width:1500px){\n  .member-dense-table{min-width:1460px}\n  .member-dense-table td{font-size:12.5px}\n  .member-dense-table .col-address{width:220px}\n  .address-cell{max-width:220px}\n}\n
+/* v4.3.4 — reliable payment member search (AJAX + server fallback) */
+.server-member-search{margin:16px 0 18px;padding:14px;border:1px solid #dce2ea;border-radius:9px;background:#f8fafc}
+.server-member-search-title{display:flex;align-items:baseline;gap:10px;margin-bottom:9px}.server-member-search-title strong{font-size:13px}.server-member-search-title span{color:#6b7280;font-size:11px}
+.server-member-search-form{display:grid;grid-template-columns:minmax(260px,1fr) auto;gap:8px}.server-member-search-form input{height:38px}
+.server-member-results{margin-top:8px;max-height:270px;overflow:auto;border:1px solid #d8dee7;border-radius:7px;background:#fff}
+.server-member-result{display:grid;grid-template-columns:110px minmax(0,1fr) 46px;gap:10px;align-items:center;padding:9px 11px;border-bottom:1px solid #edf0f3;color:#111827;text-decoration:none}.server-member-result:last-child{border-bottom:0}.server-member-result:hover{background:#eef4ff}.server-member-result strong{font-size:13px}.server-member-result span{overflow:hidden;color:#66707b;font-size:11px;text-overflow:ellipsis;white-space:nowrap}.server-member-result b{color:#2457c5;font-size:11px;text-align:right}
+.member-picker-input-row{display:grid;grid-template-columns:minmax(0,1fr) 56px 34px;gap:5px;align-items:center}.member-picker-clear{position:static;right:auto;top:auto;width:34px;height:38px}.member-picker-search{height:38px;border:1px solid #cfd6df;border-radius:6px;background:#fff;font-size:11px;font-weight:800;cursor:pointer}.member-picker-search:hover{background:#f3f6fa}
+.member-picker-results{z-index:250}
+@media(max-width:720px){.server-member-search-form{grid-template-columns:1fr}.server-member-result{grid-template-columns:90px minmax(0,1fr) 42px}}
+
+/* v4.3.5 bank reset */
+.inline-reset-form{display:inline-flex;margin:0}
+.button.danger-outline{border-color:#e7a5aa;color:#b4232d;background:#fff}
+.button.danger-outline:hover{background:#fff4f5;border-color:#d87b83}
+
+
+/* v4.4.0 integrated workflow */
+.arrears-filter-v440{grid-template-columns:minmax(180px,1.2fr) 105px 135px 90px 115px 95px 14px 95px 120px 14px 120px auto auto;overflow-x:auto}
+.certificate-candidate-box{display:flex;align-items:center;justify-content:space-between;gap:14px;margin:12px 0;padding:12px 14px;border:1px solid #f0c36b;border-radius:8px;background:#fff9eb}.certificate-candidate-box div{display:flex;flex-direction:column;gap:3px}.certificate-candidate-box span{font-size:11px;color:#68717c}.mini-followup{display:inline-block;margin-left:4px;padding:2px 5px;border-radius:4px;background:#fff3cd;color:#8a5b00;font-size:9.5px;font-weight:800;vertical-align:middle}.process-summary{align-items:stretch}.process-summary span{min-width:0}.process-summary strong{white-space:nowrap}
+@media(max-width:1500px){.arrears-filter-v440{grid-template-columns:minmax(180px,1fr) repeat(4,110px) 95px 14px 95px 115px 14px 115px auto auto}}

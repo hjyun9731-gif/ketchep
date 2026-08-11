@@ -216,6 +216,8 @@ def auto_match_bank_transaction(tx: BankTransaction):
 
     candidates, reason = member_candidates_from_text(tx.payer_text, tx.bank_account_label)
     if len(candidates) != 1:
+        if not candidates and tx.amount in {Decimal('30000'), Decimal('50000')}:
+            reason = f'신규 자격증명 후보 · {tx.amount:,.0f}원 · 종이 신청서 확인 필요'
         tx.status = BankTransaction.Status.REVIEW
         tx.match_reason = reason
         tx.save(update_fields=['status', 'match_reason', 'updated_at'])

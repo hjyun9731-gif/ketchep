@@ -198,6 +198,49 @@ def rebuild_member_account(member: Member, account_type: str) -> Prepayment:
     return prepayment
 
 
+
+def member_balance_snapshot(member_ids):
+    """Return signed current balances in three aggregate queries.
+
+    net_balance > 0: 미수금, == 0: 완납, < 0: 선납.  The negative sign is
+    preserved for every UI/export/message decision instead of converting it to
+    a separate positive display value.
+    """
+    ids = list(dict.fromkeys(int(v) for v in member_ids if v))
+    if not ids:
+        return {}
+    charge_map = {
+        row['member_id']: row['total'] or Decimal('0')
+        for row in Charge.objects.filter(
+            _effective_charge_q(), member_id__in=ids, status=Charge.Status.POSTED,
+        ).values('member_id').annotate(total=Sum('amount'))
+    }
+    # ChargeSettlement is effective through its charge's monthly job, not payment.
+    settlement_map = {
+        row['charge__member_id']: row['total'] or Decimal('0')
+        for row in ChargeSettlement.objects.filter(
+            charge__member_id__in=ids,
+            charge__status=Charge.Status.POSTED,
+            is_active=True,
+        ).filter(Q(charge__monthly_job__isnull=True) | Q(charge__monthly_job__is_current=True))
+        .values('charge__member_id').annotate(total=Sum('amount'))
+    }
+    prepayment_map = {
+        row['member_id']: row['total'] or Decimal('0')
+        for row in Prepayment.objects.filter(member_id__in=ids, balance__gt=0)
+        .values('member_id').annotate(total=Sum('balance'))
+    }
+    result = {}
+    for member_id in ids:
+        outstanding = max(Decimal('0'), charge_map.get(member_id, Decimal('0')) - settlement_map.get(member_id, Decimal('0')))
+        prepayment = max(Decimal('0'), prepayment_map.get(member_id, Decimal('0')))
+        result[member_id] = {
+            'outstanding': outstanding,
+            'prepayment': prepayment,
+            'net_balance': outstanding - prepayment,
+        }
+    return result
+
 def update_payment_status(payment: Payment):
     if payment.status == Payment.Status.CANCELLED:
         return

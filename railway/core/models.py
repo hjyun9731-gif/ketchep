@@ -109,6 +109,7 @@ class Member(TimeStampedModel):
         default=CollectionStatus.NONE, db_index=True,
     )
     source_row_key = models.CharField('원본 식별값', max_length=255, blank=True)
+    association_system_registration_needed = models.BooleanField('협회관리시스템 예정자 등록 필요', default=False, db_index=True)
     is_active_record = models.BooleanField('유효 원장', default=True, db_index=True)
 
     class Meta:
@@ -437,6 +438,7 @@ class CardTransaction(TimeStampedModel):
         MATCHED = 'matched', '매칭완료'
         REVIEW = 'review', '확인필요'
         DUPLICATE = 'duplicate', '중복의심'
+        CANCELLED = 'cancelled', '결제취소'
         IGNORED = 'ignored', '제외'
 
     job = models.ForeignKey(MonthlyJob, related_name='card_transactions', on_delete=models.PROTECT)
@@ -574,6 +576,32 @@ class Prepayment(TimeStampedModel):
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=['member', 'account_type'], name='unique_member_prepayment_account')
+        ]
+
+
+class HistoricalPaymentRecord(TimeStampedModel):
+    """Read-only historical payment facts imported from the legacy receivables workbook.
+
+    These rows are intentionally separate from Payment/PaymentAllocationLine so that
+    showing 2026 Jan-Jul history never changes the live ledger, current arrears, or
+    prepayment balances.
+    """
+    member = models.ForeignKey(Member, related_name='historical_payment_records', on_delete=models.PROTECT)
+    uploaded_file = models.ForeignKey(UploadedFile, related_name='historical_payment_records', null=True, blank=True, on_delete=models.SET_NULL)
+    year = models.PositiveSmallIntegerField(db_index=True)
+    month = models.PositiveSmallIntegerField(db_index=True)
+    account_type = models.CharField(max_length=30, choices=AccountType.choices, db_index=True)
+    payment_date = models.DateField(null=True, blank=True, db_index=True)
+    payment_date_text = models.CharField(max_length=120, blank=True)
+    amount = models.DecimalField(max_digits=14, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))])
+    source_label = models.CharField(max_length=100, default='미수금 원본')
+    source_key = models.CharField(max_length=255, unique=True, db_index=True)
+    raw_data = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ['-year', '-month', '-payment_date', '-id']
+        indexes = [
+            models.Index(fields=['member', 'year', 'month']),
         ]
 
 
