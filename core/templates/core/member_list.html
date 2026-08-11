@@ -81,7 +81,7 @@
             <td class="mono management-no">{% if member.management_no and member.management_no != '0' %}{{ member.management_no }}{% else %}-{% endif %}</td>
             <td>{{ member.region|default:'-' }}</td>
             <td><a class="dense-link vehicle-link" href="{% url 'core:member_detail' member.pk %}">{{ member.current_vehicle_no|default:'-' }}</a></td>
-            <td><a class="dense-link name-link payment-history-link" title="1~7월 입금내역 보기" href="{% url 'core:member_payment_history' member.pk %}" data-modal-url="{% url 'core:member_payment_history' member.pk %}">{{ member.name }}</a></td>
+            <td><a class="dense-link name-link payment-history-link" title="2026년 월별 입금내역 보기" href="{% url 'core:member_payment_history' member.pk %}" data-modal-url="{% url 'core:member_payment_history' member.pk %}">{{ member.name }}</a></td>
             <td class="mono">{{ member.birth6|birth6_format|default:'-' }}</td>
             <td class="mono">{{ member.phone|phone_format|default:'-' }}</td>
             <td>
@@ -111,7 +111,7 @@
             <td class="mono management-no">{% if member.management_no and member.management_no != '0' %}{{ member.management_no }}{% else %}-{% endif %}</td>
             <td>{{ member.region|default:'-' }}</td>
             <td><a class="dense-link vehicle-link" href="{% url 'core:member_detail' member.pk %}">{{ member.current_vehicle_no|default:'-' }}</a></td>
-            <td><a class="dense-link name-link payment-history-link" title="1~7월 입금내역 보기" href="{% url 'core:member_payment_history' member.pk %}" data-modal-url="{% url 'core:member_payment_history' member.pk %}">{{ member.name }}</a></td>
+            <td><a class="dense-link name-link payment-history-link" title="2026년 월별 입금내역 보기" href="{% url 'core:member_payment_history' member.pk %}" data-modal-url="{% url 'core:member_payment_history' member.pk %}">{{ member.name }}</a></td>
             <td class="mono">{{ member.phone|phone_format|default:'-' }}</td>
             <td class="mono">{{ member.closed_on|date:'y. n. j.'|default:'-' }}</td>
             <td class="address-cell" title="{{ member.address }}">{{ member.address|default:'-' }}</td>

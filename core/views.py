@@ -41,7 +41,7 @@ from core.services.imports import parse_uploaded_file, process_uploaded_file
 from core.services.historical_payments import backfill_receivable_payment_history
 from core.services.paste_import import get_or_create_current_job, process_pasted_bank_text
 from core.services.jobs import create_job_version, clone_latest_uploaded_files, set_current_job
-from core.services.ledger import complete_refund, replace_payment_allocations
+from core.services.ledger import complete_refund, rebuild_member_account, replace_payment_allocations
 from core.services.matching import (
     auto_match_bank_job, auto_match_card_job, copy_allocations_from_previous_version,
 )
@@ -380,6 +380,75 @@ def bank_paste(request):
 
 
 @login_required
+@transaction.atomic
+def bank_reconciliation_reset(request):
+    """Reset only the current month's bank-paste reconciliation.
+
+    Member data, charges, card payments and manual payments are preserved. Bank
+    payments created from NH paste are made ineffective and their active
+    allocations are cancelled, then each affected member/account ledger is
+    rebuilt once so arrears/prepayments return to the state before the paste.
+    """
+    if request.method != 'POST':
+        raise Http404
+
+    today = timezone.localdate()
+    job = get_or_create_current_job(today)
+    txs = list(
+        BankTransaction.objects.filter(job=job, is_effective=True)
+        .select_related('payment')
+        .order_by('id')
+    )
+    if not txs:
+        messages.info(request, '초기화할 이번 달 입금대조 내역이 없습니다.')
+        return redirect('core:dashboard')
+
+    payment_ids = [tx.payment.id for tx in txs if hasattr(tx, 'payment')]
+    active_lines = PaymentAllocationLine.objects.filter(
+        payment_id__in=payment_ids, status=PaymentAllocationLine.Status.ACTIVE,
+    )
+    impacted = set(active_lines.values_list('member_id', 'account_type'))
+    cancelled_lines = active_lines.count()
+    active_lines.update(status=PaymentAllocationLine.Status.CANCELLED)
+
+    Payment.objects.filter(id__in=payment_ids).update(
+        status=Payment.Status.CANCELLED, is_effective=False,
+    )
+    BankTransaction.objects.filter(id__in=[tx.id for tx in txs]).update(
+        status=BankTransaction.Status.IGNORED,
+        is_effective=False,
+        match_reason='입금대조 초기화',
+    )
+
+    recurring_impacted = {
+        (member_id, account_type) for member_id, account_type in impacted
+        if account_type in {AccountType.MEMBERSHIP_FEE, AccountType.MANAGEMENT_FEE}
+    }
+    for member_id, account_type in recurring_impacted:
+        member = Member.objects.get(pk=member_id)
+        rebuild_member_account(member, account_type)
+
+    log_action(
+        action='bank_reconciliation_reset',
+        instance=job,
+        after={
+            'transactions_reset': len(txs),
+            'payments_cancelled': len(payment_ids),
+            'allocation_lines_cancelled': cancelled_lines,
+            'accounts_rebuilt': len(recurring_impacted),
+        },
+        reason='사용자 요청으로 이번 달 농협 입금대조 초기화',
+        actor=_actor(request),
+    )
+    messages.success(
+        request,
+        f'이번 달 입금대조를 초기화했습니다. 거래 {len(txs)}건 · 배정 {cancelled_lines}건을 되돌렸습니다. '
+        '회원명단·부과·카드결제·수기입금은 건드리지 않았습니다.',
+    )
+    return redirect('core:dashboard')
+
+
+@login_required
 def job_create(request):
     if request.method == 'POST':
         form = MonthlyJobForm(request.POST)
@@ -601,26 +670,36 @@ def export_all(request):
     return FileResponse(output, as_attachment=True, filename=filename)
 
 
-@login_required
-def member_lookup(request):
-    """Fast type-ahead member lookup for payment allocation and other pickers.
+def _member_lookup_rows(q, limit=20):
+    """Return compact member candidates for both AJAX and no-JS lookup.
 
-    Never render all 3,000+ members into a <select>. Only return the best 20
-    candidates after the operator types a name, vehicle number, management
-    number, phone number, or birth digits.
+    The allocation screen must remain usable even when browser JavaScript or an
+    AJAX request fails, so this helper is shared by the JSON endpoint and the
+    normal GET fallback rendered by payment_allocate().
     """
-    q = (request.GET.get('q') or '').strip()
+    q = (q or '').strip()
     if not q:
-        return JsonResponse({'results': []})
+        return []
 
     digits = ''.join(ch for ch in q if ch.isdigit())
     vehicle_q = normalize_vehicle_no(q)
-    query = (
-        Q(name__icontains=q)
-        | Q(management_no__icontains=q)
-        | Q(phone__icontains=digits or q)
-        | Q(birth6__icontains=digits or q)
-    )
+    query = Q(name__icontains=q) | Q(management_no__icontains=q)
+
+    # Phone numbers are stored in mixed formats (010-1234-5678 / 01012345678).
+    # Search both the literal input and common digit-group variants.
+    query |= Q(phone__icontains=q)
+    if digits:
+        query |= Q(birth6__icontains=digits)
+        query |= Q(phone__icontains=digits)
+        if len(digits) == 11:
+            query |= Q(phone__icontains=f'{digits[:3]}-{digits[3:7]}-{digits[7:]}')
+        elif len(digits) == 10:
+            query |= Q(phone__icontains=f'{digits[:3]}-{digits[3:6]}-{digits[6:]}')
+
+    # Search both raw and normalized vehicle values. The raw fallback also
+    # covers legacy rows whose normalized_vehicle_no was not backfilled.
+    if q:
+        query |= Q(vehicles__vehicle_no__icontains=q)
     if vehicle_q:
         query |= Q(vehicles__normalized_vehicle_no__icontains=vehicle_q)
 
@@ -628,16 +707,18 @@ def member_lookup(request):
         Member.objects.filter(is_active_record=True)
         .filter(query)
         .distinct()
-        .order_by('name', 'management_no', 'id')[:20]
+        .order_by('name', 'management_no', 'id')[:limit]
     )
     members = list(qs)
     member_ids = [member.id for member in members]
     vehicle_map = {
         row['member_id']: row['vehicle_no']
         for row in Vehicle.objects.filter(member_id__in=member_ids, is_current=True)
+        .order_by('member_id', '-start_date', '-id')
         .values('member_id', 'vehicle_no')
     }
-    results = []
+
+    rows = []
     for member in members:
         vehicle = vehicle_map.get(member.id, '')
         status = '폐업' if member.operational_status == Member.OperationalStatus.CLOSED else '현재'
@@ -646,19 +727,26 @@ def member_lookup(request):
             label_parts.append(vehicle)
         if member.region:
             label_parts.append(member.region)
-        if member.management_no:
+        if member.management_no and member.management_no != '0':
             label_parts.append(f'관리 {member.management_no}')
-        results.append({
+        rows.append({
             'id': member.id,
             'name': member.name,
             'vehicle': vehicle,
             'region': member.region or '',
-            'management_no': member.management_no or '',
+            'management_no': '' if member.management_no == '0' else (member.management_no or ''),
             'phone': member.phone or '',
+            'birth6': member.birth6 or '',
             'status': status,
             'label': ' · '.join(label_parts),
         })
-    return JsonResponse({'results': results})
+    return rows
+
+
+@login_required
+def member_lookup(request):
+    """JSON type-ahead lookup. Never renders the full member list."""
+    return JsonResponse({'results': _member_lookup_rows(request.GET.get('q'), 20)})
 
 
 @login_required
@@ -894,39 +982,61 @@ def member_detail(request, pk):
 @login_required
 def member_payment_history(request, pk):
     member = get_object_or_404(Member, pk=pk)
+    today = timezone.localdate()
     year = 2026
-    start_month = 1
-    end_month = 7
+    legacy_start_month = 1
+    legacy_end_month = 7
+    current_month = today.month if today.year == year else 12
+    display_end_month = max(legacy_end_month, current_month)
+
+    # 2026년 1~7월은 기존 미수금 원본을 조회용 사실로 유지한다.
     legacy = list(
         HistoricalPaymentRecord.objects.filter(
-            member=member, year=year, month__gte=start_month, month__lte=end_month,
+            member=member, year=year,
+            month__gte=legacy_start_month, month__lte=legacy_end_month,
         ).order_by('month', 'payment_date', 'id')
     )
-    monthly = {month: Decimal('0') for month in range(start_month, end_month + 1)}
+    legacy_monthly = {month: Decimal('0') for month in range(legacy_start_month, legacy_end_month + 1)}
     for item in legacy:
-        monthly[item.month] += item.amount
-    month_rows = [{'month': m, 'amount': monthly[m]} for m in range(start_month, end_month + 1)]
+        legacy_monthly[item.month] += item.amount
 
-    # Live-program payments are shown separately so old source facts never change the ledger.
+    # 8월 이후는 프로그램에서 처리한 통장·카드·수기입금 원장을 사용한다.
+    live_start_month = 8
     live_lines = list(
         member.payment_allocation_lines.filter(
             status=PaymentAllocationLine.Status.ACTIVE,
             payment__is_effective=True,
             payment__payment_date__year=year,
-            payment__payment_date__month__gte=start_month,
-            payment__payment_date__month__lte=end_month,
+            payment__payment_date__month__gte=live_start_month,
+            payment__payment_date__month__lte=display_end_month,
         ).select_related('payment').order_by('payment__payment_date', 'id')
     )
-    legacy_total = sum((item.amount for item in legacy), Decimal('0'))
+    live_monthly = {month: Decimal('0') for month in range(live_start_month, display_end_month + 1)}
+    for line in live_lines:
+        month = timezone.localtime(line.payment.payment_date).month
+        if month in live_monthly:
+            live_monthly[month] += line.amount
+
+    month_rows = []
+    for month in range(1, display_end_month + 1):
+        if month <= legacy_end_month:
+            amount = legacy_monthly.get(month, Decimal('0'))
+            source = 'legacy'
+        else:
+            amount = live_monthly.get(month, Decimal('0'))
+            source = 'live'
+        month_rows.append({'month': month, 'amount': amount, 'source': source})
+
     return render(request, 'core/partials/member_payment_history_modal.html', {
         'member': member,
         'year': year,
-        'start_month': start_month,
-        'end_month': end_month,
+        'legacy_start_month': legacy_start_month,
+        'legacy_end_month': legacy_end_month,
+        'display_end_month': display_end_month,
         'legacy': legacy,
-        'legacy_total': legacy_total,
         'month_rows': month_rows,
         'live_lines': live_lines,
+        'current_month': current_month,
     })
 
 
@@ -1280,6 +1390,28 @@ def payment_allocate(request, pk):
         'member': line.member_id, 'account_type': line.account_type,
         'amount': line.amount, 'memo': line.memo,
     } for line in existing]
+
+    member_q = (request.GET.get('member_q') or '').strip()
+    lookup_results = _member_lookup_rows(member_q, 20) if member_q else []
+    picked_member = None
+    pick = (request.GET.get('pick') or '').strip()
+    if request.method == 'GET' and pick:
+        try:
+            picked_member = Member.objects.filter(is_active_record=True, pk=int(pick)).first()
+        except (TypeError, ValueError):
+            picked_member = None
+        if picked_member:
+            account_type = picked_member.receivable_account_type or AccountType.ASSOCIATION_DUE
+            amount = payment.unallocated_amount if payment.unallocated_amount > 0 else payment.amount
+            initial = [{
+                'member': picked_member.pk,
+                'account_type': account_type,
+                'amount': amount,
+                'memo': '',
+            }]
+
+    if not initial:
+        initial = [{}]
     formset = AllocationFormSet(request.POST or None, initial=initial)
     if request.method == 'POST' and formset.is_valid():
         rows = []
@@ -1314,7 +1446,13 @@ def payment_allocate(request, pk):
             return redirect('core:dashboard')
         except Exception as exc:
             messages.error(request, str(exc))
-    return render(request, 'core/payment_allocate.html', {'payment': payment, 'formset': formset})
+    return render(request, 'core/payment_allocate.html', {
+        'payment': payment,
+        'formset': formset,
+        'member_q': member_q,
+        'lookup_results': lookup_results,
+        'picked_member': picked_member,
+    })
 
 
 @login_required

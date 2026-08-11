@@ -3,7 +3,7 @@
 {% block content %}
 <div class="form-shell" style="max-width:1040px">
   <div class="page-head">
-    <div class="page-title"><a class="back-link" href="{% url 'core:bank_transaction_list' %}">← 입금 처리내역</a><h1>입금 확인</h1><p>회원은 이름·차량번호·관리번호·전화번호로 검색해서 선택하세요. 3,700명을 드롭다운에 펼치지 않습니다.</p></div>
+    <div class="page-title"><a class="back-link" href="{% url 'core:bank_transaction_list' %}">← 입금 처리내역</a><h1>입금 확인</h1><p>회원은 이름·차량번호·관리번호·전화번호로 검색해서 선택합니다. 전체 명단을 드롭다운으로 펼치지 않습니다.</p></div>
   </div>
   <section class="card form-card">
     <div class="source-summary">
@@ -13,6 +13,30 @@
       <div><span>현재 미배정</span><strong>{{ payment.unallocated_amount|money }}원</strong></div>
     </div>
     {% if payment.bank_transaction and payment.bank_transaction.match_reason %}<div class="alert warning">추천 근거: {{ payment.bank_transaction.match_reason }}</div>{% endif %}
+
+    <div class="server-member-search">
+      <div class="server-member-search-title"><strong>회원 찾기</strong><span>검색이 안 뜨는 경우에도 이 검색은 서버에서 직접 동작합니다.</span></div>
+      <form method="get" class="server-member-search-form">
+        <input type="text" name="member_q" value="{{ member_q }}" placeholder="이름·차량번호·관리번호·전화번호 입력" autocomplete="off">
+        <button class="button primary" type="submit">검색</button>
+      </form>
+      {% if member_q %}
+        <div class="server-member-results">
+          {% if lookup_results %}
+            {% for item in lookup_results %}
+              <a class="server-member-result" href="?member_q={{ member_q|urlencode }}&pick={{ item.id }}">
+                <strong>{{ item.name }}</strong>
+                <span>{% if item.vehicle %}{{ item.vehicle }}{% endif %}{% if item.region %} · {{ item.region }}{% endif %}{% if item.management_no %} · 관리 {{ item.management_no }}{% endif %}{% if item.phone %} · {{ item.phone }}{% endif %}</span>
+                <b>선택</b>
+              </a>
+            {% endfor %}
+          {% else %}
+            <div class="member-picker-empty">검색 결과가 없습니다.</div>
+          {% endif %}
+        </div>
+      {% endif %}
+    </div>
+
     <form method="post" id="allocation-form">{% csrf_token %}{{ formset.management_form }}
       {% for form in formset %}
       <div class="allocation-row allocation-row-v43">
@@ -21,12 +45,15 @@
           <label>회원</label>
           {{ form.member }}
           <div class="member-picker" data-member-picker data-search-url="{% url 'core:member_lookup' %}">
-            <input type="text" class="member-picker-input" value="{{ form.member_display }}" placeholder="이름·차량번호·관리번호·전화번호 입력" autocomplete="off" aria-label="회원 검색">
-            <button type="button" class="member-picker-clear" title="선택 지우기" aria-label="선택 지우기">×</button>
+            <div class="member-picker-input-row">
+              <input type="text" class="member-picker-input" value="{{ form.member_display }}" placeholder="이름·차량번호·관리번호·전화번호 입력" autocomplete="off" aria-label="회원 검색">
+              <button type="button" class="member-picker-search">검색</button>
+              <button type="button" class="member-picker-clear" title="선택 지우기" aria-label="선택 지우기">×</button>
+            </div>
             <div class="member-picker-results" hidden></div>
           </div>
           {% if form.member.errors %}<div class="errorlist">{{ form.member.errors }}</div>{% endif %}
-          <small class="field-hint">두 글자만 입력해도 최대 20명만 즉시 검색합니다.</small>
+          <small class="field-hint">입력 후 바로 후보가 뜨며, 안 뜨면 위의 서버 검색을 사용하세요.</small>
         </div>
         <div>{{ form.account_type.label_tag }}{{ form.account_type }}{{ form.account_type.errors }}</div>
         <div>{{ form.amount.label_tag }}{{ form.amount }}{{ form.amount.errors }}</div>
@@ -49,13 +76,16 @@
   const pickers=[...document.querySelectorAll('[data-member-picker]')];
   pickers.forEach(function(picker){
     const input=picker.querySelector('.member-picker-input');
+    const searchButton=picker.querySelector('.member-picker-search');
     const clear=picker.querySelector('.member-picker-clear');
     const results=picker.querySelector('.member-picker-results');
     const hidden=picker.parentElement.querySelector('input[type="hidden"][name$="-member"]');
     const url=picker.dataset.searchUrl;
-    let timer=null, controller=null, activeIndex=-1;
+    let timer=null, controller=null, activeIndex=-1, currentItems=[];
 
-    function closeResults(){results.hidden=true;results.innerHTML='';activeIndex=-1;}
+    if(!input || !results || !hidden || !url){ return; }
+
+    function closeResults(){results.hidden=true;results.innerHTML='';activeIndex=-1;currentItems=[];}
     function setSelected(item){
       hidden.value=item.id;
       input.value=item.label;
@@ -63,38 +93,47 @@
       closeResults();
       input.focus();
     }
+    function escapeHtml(value){return String(value||'').replace(/[&<>'"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));}
     function render(items){
-      if(!items.length){results.innerHTML='<div class="member-picker-empty">검색 결과가 없습니다.</div>';results.hidden=false;return;}
-      results.innerHTML=items.map((item,idx)=>{
+      currentItems=items||[];
+      if(!currentItems.length){results.innerHTML='<div class="member-picker-empty">검색 결과가 없습니다.</div>';results.hidden=false;return;}
+      results.innerHTML=currentItems.map((item,idx)=>{
         const meta=[item.vehicle,item.region,item.management_no ? '관리 '+item.management_no : '',item.phone,item.status].filter(Boolean).join(' · ');
-        return `<button type="button" class="member-picker-option" data-index="${idx}" data-id="${item.id}"><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(meta)}</span></button>`;
+        return `<button type="button" class="member-picker-option" data-index="${idx}"><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(meta)}</span></button>`;
       }).join('');
       results.hidden=false;
       results.querySelectorAll('.member-picker-option').forEach((button,idx)=>{
-        button.addEventListener('mousedown',function(e){e.preventDefault();setSelected(items[idx]);});
+        button.addEventListener('click',function(e){e.preventDefault();setSelected(currentItems[idx]);});
       });
     }
-    function escapeHtml(value){return String(value||'').replace(/[&<>'"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));}
     async function search(){
       const q=input.value.trim();
       if(input.dataset.selectedLabel && q===input.dataset.selectedLabel){closeResults();return;}
       hidden.value='';
       if(q.length<1){closeResults();return;}
+      results.innerHTML='<div class="member-picker-empty">검색 중…</div>';results.hidden=false;
       if(controller) controller.abort(); controller=new AbortController();
       try{
-        const response=await fetch(url+'?q='+encodeURIComponent(q),{headers:{'X-Requested-With':'XMLHttpRequest'},signal:controller.signal});
-        if(!response.ok) throw new Error('lookup failed');
+        const joiner=url.indexOf('?')>=0?'&':'?';
+        const response=await fetch(url+joiner+'q='+encodeURIComponent(q),{credentials:'same-origin',headers:{'Accept':'application/json','X-Requested-With':'XMLHttpRequest'},signal:controller.signal});
+        if(!response.ok) throw new Error('HTTP '+response.status);
         const data=await response.json(); render(data.results||[]);
-      }catch(error){if(error.name!=='AbortError'){results.innerHTML='<div class="member-picker-empty">검색 중 오류가 발생했습니다.</div>';results.hidden=false;}}
+      }catch(error){
+        if(error.name!=='AbortError'){
+          results.innerHTML='<div class="member-picker-empty">자동검색 오류. 위의 회원 찾기에서 검색하세요.</div>';results.hidden=false;
+        }
+      }
     }
-    input.addEventListener('input',function(){delete input.dataset.selectedLabel;clearTimeout(timer);timer=setTimeout(search,160);});
+    input.addEventListener('input',function(){delete input.dataset.selectedLabel;clearTimeout(timer);timer=setTimeout(search,220);});
     input.addEventListener('focus',function(){if(input.value.trim() && !hidden.value) search();});
+    if(searchButton) searchButton.addEventListener('click',search);
     input.addEventListener('keydown',function(e){
+      if(e.key==='Enter' && results.hidden){e.preventDefault();search();return;}
       const options=[...results.querySelectorAll('.member-picker-option')];
       if(results.hidden || !options.length) return;
       if(e.key==='ArrowDown'){e.preventDefault();activeIndex=Math.min(options.length-1,activeIndex+1);}
       else if(e.key==='ArrowUp'){e.preventDefault();activeIndex=Math.max(0,activeIndex-1);}
-      else if(e.key==='Enter' && activeIndex>=0){e.preventDefault();options[activeIndex].dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));return;}
+      else if(e.key==='Enter' && activeIndex>=0){e.preventDefault();options[activeIndex].click();return;}
       else if(e.key==='Escape'){closeResults();return;} else return;
       options.forEach((node,idx)=>node.classList.toggle('active',idx===activeIndex));
       options[activeIndex].scrollIntoView({block:'nearest'});

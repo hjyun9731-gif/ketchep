@@ -8,6 +8,7 @@ urlpatterns = [
     path('', views.dashboard, name='dashboard'),
     path('initial-import/', views.initial_data_import, name='initial_data_import'),
     path('bank-paste/', views.bank_paste, name='bank_paste'),
+    path('bank-reset/', views.bank_reconciliation_reset, name='bank_reconciliation_reset'),
     path('jobs/new/', views.job_create, name='job_create'),
     path('jobs/<int:pk>/', views.job_detail, name='job_detail'),
     path('jobs/<int:pk>/upload/', views.job_upload, name='job_upload'),

@@ -315,7 +315,7 @@ class AllocationLineForm(forms.Form):
             self.member_display = ' · '.join(parts)
 
 
-AllocationFormSet = formset_factory(AllocationLineForm, extra=1, can_delete=True)
+AllocationFormSet = formset_factory(AllocationLineForm, extra=0, can_delete=True)
 
 
 class RefundForm(forms.ModelForm):
